@@ -116,30 +116,13 @@
     }
 
     /* Aurora blob — slow, organic background motion behind the chat pane. */
+    /* Static aurora — blur + animation removed, they tanked low-end GPUs.
+     * Same warmth via plain radial gradients on the parent. */
     .aurora {
       position: absolute; inset: 0; overflow: hidden; pointer-events: none;
-    }
-    .aurora::before, .aurora::after {
-      content: '';
-      position: absolute;
-      width: 60vmax; height: 60vmax;
-      border-radius: 50%;
-      filter: blur(120px);
-      opacity: 0.18;
-    }
-    .aurora::before {
-      background: radial-gradient(circle, #ec8a25, transparent 60%);
-      top: -20vmax; right: -10vmax;
-      animation: drift 28s ease-in-out infinite alternate;
-    }
-    .aurora::after {
-      background: radial-gradient(circle, #7a3c0c, transparent 60%);
-      bottom: -25vmax; left: -10vmax;
-      animation: drift 36s ease-in-out infinite alternate-reverse;
-    }
-    @keyframes drift {
-      0%   { transform: translate(0,0) scale(1); }
-      100% { transform: translate(8vmax,-6vmax) scale(1.15); }
+      background:
+        radial-gradient(60vmax 60vmax at 90% -10%, rgba(236,138,37,0.10), transparent 60%),
+        radial-gradient(60vmax 60vmax at -5% 110%, rgba(122,60,12,0.10), transparent 60%);
     }
 
     /* Hairline left rail — lights up amber when active. */
@@ -800,6 +783,28 @@
     }
   }
 
+  /* Cheap streaming-only update: rewrite the textContent of the currently
+   * streaming bubble in place. Avoids the full renderMessages() cost
+   * (which reflows every message and re-parses markdown on each token). */
+  let streamRafScheduled = false;
+  function scheduleStreamUpdate(msg) {
+    if (streamRafScheduled) return;
+    streamRafScheduled = true;
+    requestAnimationFrame(() => {
+      streamRafScheduled = false;
+      const cont = document.getElementById('messages');
+      const bodies = cont.querySelectorAll('div.prose[data-streaming="1"]');
+      const body = bodies[bodies.length - 1];
+      if (!body) { renderMessages(); return; }
+      // Preserve the caret; only replace the text node before it.
+      const caret = body.querySelector('.caret');
+      body.textContent = msg.content || '';
+      if (caret) body.appendChild(caret);
+      const userScrolledUp = cont.scrollHeight - cont.scrollTop - cont.clientHeight > 80;
+      if (!userScrolledUp) cont.scrollTop = cont.scrollHeight;
+    });
+  }
+
   function renderMessages() {
     const sess = activeSession();
     const cont = document.getElementById('messages');
@@ -850,11 +855,17 @@
     const body = document.createElement('div');
     body.className = 'prose text-[14.5px]';
     body.dataset.role = m.role;
-    body.innerHTML = renderMarkdown(m.content || '');
+    // Skip markdown parse while streaming — re-running marked on every token
+    // is the dominant cost. Use plain text + a caret; one final markdown
+    // pass happens when the stream completes.
     if (m.streaming) {
+      body.dataset.streaming = '1';
+      body.textContent = m.content || '';
       const caret = document.createElement('span');
       caret.className = 'caret';
       body.appendChild(caret);
+    } else {
+      body.innerHTML = renderMarkdown(m.content || '');
     }
     if (m.error) {
       const err = document.createElement('div');
@@ -1465,9 +1476,7 @@
             const delta = obj.choices?.[0]?.delta?.content || '';
             if (delta) {
               assistantMsg.content += delta;
-              const wasAtBottom = !userScrolledUp();
-              renderMessages();
-              if (wasAtBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+              scheduleStreamUpdate(assistantMsg);
             }
           } catch (e) { /* ignore partial JSON */ }
         }
@@ -1512,7 +1521,7 @@
             try {
               const obj = JSON.parse(payload);
               const delta = obj.choices?.[0]?.delta?.content || '';
-              if (delta) { followAssistant.content += delta; renderMessages(); }
+              if (delta) { followAssistant.content += delta; scheduleStreamUpdate(followAssistant); }
             } catch { /* ignore */ }
           }
         }
