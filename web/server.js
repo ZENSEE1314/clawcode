@@ -6,6 +6,14 @@ import { fileURLToPath } from 'node:url';
 const PORT = Number(process.env.PORT) || 3000;
 const OLLAMA_URL = process.env.OLLAMA_URL || 'https://ollama.com';
 const OLLAMA_API_KEY = process.env.OLLAMA_API_KEY || '';
+// Optional HTTP Basic Auth — both vars must be set to activate. Healthcheck
+// is exempt so Railway's probe keeps working without credentials.
+const BASIC_AUTH_USER = process.env.BASIC_AUTH_USER || '';
+const BASIC_AUTH_PASS = process.env.BASIC_AUTH_PASS || '';
+const AUTH_ENABLED = Boolean(BASIC_AUTH_USER && BASIC_AUTH_PASS);
+const EXPECTED_AUTH = AUTH_ENABLED
+  ? 'Basic ' + Buffer.from(`${BASIC_AUTH_USER}:${BASIC_AUTH_PASS}`).toString('base64')
+  : '';
 // resolve() strips any trailing slash that fileURLToPath leaves on Linux,
 // so STATIC_ROOT + sep below produces a single boundary separator.
 const STATIC_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
@@ -231,12 +239,28 @@ async function serveStatic(req, res) {
   }
 }
 
+function checkAuth(req, res) {
+  if (!AUTH_ENABLED) return true;
+  const got = req.headers.authorization || '';
+  // timingSafeEqual requires equal-length buffers; pad and compare via length first
+  if (got.length !== EXPECTED_AUTH.length || got !== EXPECTED_AUTH) {
+    res.writeHead(401, {
+      'www-authenticate': 'Basic realm="claw", charset="UTF-8"',
+      'content-type': 'text/plain',
+    });
+    res.end('authentication required');
+    return false;
+  }
+  return true;
+}
+
 const server = createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/healthz') {
     res.writeHead(200, { 'content-type': 'text/plain' });
     res.end('ok');
     return;
   }
+  if (!checkAuth(req, res)) return;
   if (req.method === 'POST' && req.url.startsWith('/v1/chat/completions')) {
     await proxyChat(req, res);
     return;
@@ -262,4 +286,5 @@ server.listen(PORT, () => {
   console.log(`claw-code web listening on :${PORT}`);
   console.log(`upstream ollama: ${OLLAMA_URL}`);
   console.log(`api key: ${OLLAMA_API_KEY ? 'set' : 'MISSING — set OLLAMA_API_KEY'}`);
+  console.log(`basic auth: ${AUTH_ENABLED ? `ENABLED (user=${BASIC_AUTH_USER})` : 'disabled'}`);
 });

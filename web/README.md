@@ -79,5 +79,7 @@ Any Ollama Cloud model name works — just type it in.
 ## Security notes
 
 - API key is **server-side only**. Never exposed to the browser.
-- No auth on the proxy itself — anyone with the Railway URL can use your key. Add basic auth or put it behind Cloudflare Access if that matters to you.
+- **Optional HTTP Basic Auth**: set both `BASIC_AUTH_USER` and `BASIC_AUTH_PASS` in Railway → Variables to lock the app behind a browser login prompt. Leaving either unset disables auth (default). The `/healthz` endpoint always bypasses auth so Railway's probe keeps working.
 - CORS is same-origin only (no cross-origin headers set).
+
+For stronger access control, put the Railway URL behind Cloudflare Access or a similar identity-aware proxy.
