@@ -1,0 +1,1486 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>claw — local agent console</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,800&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+  <script>
+    // Tailwind config — wires design tokens into utilities.
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            // Surface palette — warm, near-black not pure black.
+            ink: {
+              950: '#0d0c0a',
+              900: '#141210',
+              800: '#1c1916',
+              700: '#26221d',
+              600: '#332e27',
+              500: '#4a433a',
+              400: '#7a7064',
+              300: '#a8a094',
+              200: '#d6d1c7',
+              100: '#ece8df',
+              50:  '#f6f3ec',
+            },
+            // Accent — copper/amber, not the AI-default blue/purple.
+            ember: {
+              50:  '#fef6ec',
+              100: '#fde7c4',
+              200: '#fbcc88',
+              300: '#f5a94c',
+              400: '#ec8a25',
+              500: '#d56b13',
+              600: '#a8520d',
+              700: '#7a3c0c',
+              800: '#4f280b',
+              900: '#2c1707',
+            },
+            moss:    { 400: '#7fb069', 500: '#5e8c4a', 600: '#456a36' },
+            rust:    { 400: '#c8553d', 500: '#a23e2a', 600: '#7a2d1f' },
+            slatey:  { 400: '#8a8579', 500: '#6e695e' },
+          },
+          fontFamily: {
+            display: ['Fraunces', 'Georgia', 'serif'],
+            body:    ['Inter', 'system-ui', 'sans-serif'],
+            mono:    ['JetBrains Mono', 'ui-monospace', 'monospace'],
+          },
+          boxShadow: {
+            edge:  '0 0 0 1px rgba(255,255,255,0.04), 0 1px 2px rgba(0,0,0,0.4)',
+            glow:  '0 0 0 1px rgba(236,138,37,0.35), 0 0 24px -4px rgba(236,138,37,0.4)',
+            inner1:'inset 0 1px 0 rgba(255,255,255,0.03)',
+          },
+          transitionTimingFunction: {
+            crisp: 'cubic-bezier(0.2, 0.8, 0.2, 1)',
+          },
+        },
+      },
+    };
+  </script>
+
+  <style>
+    :root {
+      --grain-opacity: 0.035;
+      --bg-base: #0d0c0a;
+      --bg-elev-1: #141210;
+      --bg-elev-2: #1c1916;
+      --bg-elev-3: #26221d;
+      --fg: #ece8df;
+      --fg-muted: #a8a094;
+      --fg-dim: #7a7064;
+      --border: rgba(255,255,255,0.06);
+      --border-strong: rgba(255,255,255,0.10);
+      --accent: #ec8a25;
+    }
+    html.light {
+      --bg-base: #f6f3ec;
+      --bg-elev-1: #fbf8f1;
+      --bg-elev-2: #ffffff;
+      --bg-elev-3: #ece8df;
+      --fg: #1c1916;
+      --fg-muted: #4a433a;
+      --fg-dim: #7a7064;
+      --border: rgba(0,0,0,0.07);
+      --border-strong: rgba(0,0,0,0.12);
+      --grain-opacity: 0.05;
+    }
+
+    html, body { height: 100%; }
+    body {
+      background: var(--bg-base);
+      color: var(--fg);
+      font-family: 'Inter', system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      overflow: hidden;
+    }
+
+    /* Subtle grain — depth without heaviness. */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.5 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+      opacity: var(--grain-opacity);
+      pointer-events: none;
+      mix-blend-mode: overlay;
+      z-index: 1;
+    }
+
+    /* Aurora blob — slow, organic background motion behind the chat pane. */
+    .aurora {
+      position: absolute; inset: 0; overflow: hidden; pointer-events: none;
+    }
+    .aurora::before, .aurora::after {
+      content: '';
+      position: absolute;
+      width: 60vmax; height: 60vmax;
+      border-radius: 50%;
+      filter: blur(120px);
+      opacity: 0.18;
+    }
+    .aurora::before {
+      background: radial-gradient(circle, #ec8a25, transparent 60%);
+      top: -20vmax; right: -10vmax;
+      animation: drift 28s ease-in-out infinite alternate;
+    }
+    .aurora::after {
+      background: radial-gradient(circle, #7a3c0c, transparent 60%);
+      bottom: -25vmax; left: -10vmax;
+      animation: drift 36s ease-in-out infinite alternate-reverse;
+    }
+    @keyframes drift {
+      0%   { transform: translate(0,0) scale(1); }
+      100% { transform: translate(8vmax,-6vmax) scale(1.15); }
+    }
+
+    /* Hairline left rail — lights up amber when active. */
+    .rail {
+      border-left: 1px solid transparent;
+      transition: border-color 160ms cubic-bezier(0.2,0.8,0.2,1), background 160ms;
+    }
+    .rail:hover { border-left-color: var(--border-strong); }
+    .rail.active { border-left-color: var(--accent); background: rgba(236,138,37,0.06); }
+
+    /* Cut-corner button — give one corner some personality. */
+    .cut-corner {
+      clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
+    }
+
+    /* Pulsing dot for "running" state. */
+    .pulse-dot {
+      position: relative;
+    }
+    .pulse-dot::after {
+      content: '';
+      position: absolute; inset: 0;
+      border-radius: inherit;
+      box-shadow: 0 0 0 0 rgba(236,138,37,0.6);
+      animation: pulse 1.6s cubic-bezier(0.2,0.8,0.2,1) infinite;
+    }
+    @keyframes pulse {
+      0%   { box-shadow: 0 0 0 0 rgba(236,138,37,0.6); }
+      80%  { box-shadow: 0 0 0 10px rgba(236,138,37,0); }
+      100% { box-shadow: 0 0 0 0 rgba(236,138,37,0); }
+    }
+
+    /* Streaming caret. */
+    .caret {
+      display: inline-block;
+      width: 0.55ch; height: 1em;
+      vertical-align: -0.15em;
+      background: var(--accent);
+      animation: blink 1s steps(2) infinite;
+      margin-left: 2px;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    /* Scrollbars — thin, low-key. */
+    .scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+    .scroll::-webkit-scrollbar-track { background: transparent; }
+    .scroll::-webkit-scrollbar-thumb {
+      background: rgba(120,110,95,0.25);
+      border-radius: 0;
+    }
+    .scroll::-webkit-scrollbar-thumb:hover { background: rgba(120,110,95,0.45); }
+
+    /* Code block styling for marked output. */
+    .prose pre {
+      background: var(--bg-elev-1);
+      border: 1px solid var(--border);
+      padding: 0.85rem 1rem;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 0.825rem;
+      line-height: 1.55;
+      overflow-x: auto;
+      position: relative;
+      margin: 0.65rem 0;
+    }
+    .prose code {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 0.85em;
+      background: rgba(236,138,37,0.08);
+      padding: 0.1rem 0.35rem;
+      border: 1px solid var(--border);
+      color: var(--fg);
+    }
+    .prose pre code {
+      background: transparent;
+      border: 0;
+      padding: 0;
+      color: inherit;
+    }
+    .prose p { margin: 0.4rem 0; line-height: 1.6; }
+    .prose ul, .prose ol { margin: 0.4rem 0 0.4rem 1.25rem; }
+    .prose ul { list-style: disc; }
+    .prose ol { list-style: decimal; }
+    .prose h1, .prose h2, .prose h3 {
+      font-family: 'Fraunces', Georgia, serif;
+      font-weight: 500;
+      margin: 0.8rem 0 0.4rem;
+      letter-spacing: -0.01em;
+    }
+    .prose h1 { font-size: 1.5rem; }
+    .prose h2 { font-size: 1.25rem; }
+    .prose h3 { font-size: 1.1rem; }
+    .prose a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+    .prose blockquote {
+      border-left: 2px solid var(--accent);
+      padding-left: 0.85rem;
+      color: var(--fg-muted);
+      margin: 0.6rem 0;
+    }
+
+    .copy-btn {
+      position: absolute; top: 6px; right: 6px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--fg-muted);
+      background: rgba(0,0,0,0.25);
+      border: 1px solid var(--border);
+      padding: 2px 6px;
+      cursor: pointer;
+      transition: color 120ms, background 120ms;
+    }
+    .copy-btn:hover { color: var(--accent); background: rgba(236,138,37,0.1); }
+
+    /* kbd chip. */
+    kbd {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10.5px;
+      padding: 2px 5px;
+      background: var(--bg-elev-3);
+      border: 1px solid var(--border-strong);
+      border-bottom-width: 2px;
+      color: var(--fg-muted);
+      letter-spacing: 0.04em;
+    }
+
+    /* Visible focus rings on every interactive element. */
+    button:focus-visible,
+    a:focus-visible,
+    input:focus-visible,
+    textarea:focus-visible,
+    select:focus-visible,
+    [role="button"]:focus-visible,
+    [tabindex="0"]:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    /* Toast slide. */
+    .toast-enter { transform: translateY(20px); opacity: 0; }
+    .toast-show  { transform: translateY(0);    opacity: 1; transition: transform 220ms cubic-bezier(0.2,0.8,0.2,1), opacity 220ms; }
+
+    /* Modal entry. */
+    .modal-bg { background: rgba(0,0,0,0.55); backdrop-filter: blur(4px); }
+
+    /* Layout root sits above grain. */
+    .layout { position: relative; z-index: 2; }
+
+    /* Message bubble baseline. */
+    .bubble-user {
+      background: var(--bg-elev-3);
+      border: 1px solid var(--border);
+      color: var(--fg);
+    }
+    .bubble-assistant {
+      background: transparent;
+      color: var(--fg);
+    }
+
+    /* Reduce motion. */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+      }
+    }
+
+    /* Custom checkbox. */
+    .check {
+      width: 16px; height: 16px;
+      border: 1px solid var(--border-strong);
+      background: var(--bg-elev-1);
+      display: inline-flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      transition: all 120ms;
+    }
+    .check.on {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .check.on::after {
+      content: '';
+      width: 8px; height: 5px;
+      border-left: 2px solid #1c1916;
+      border-bottom: 2px solid #1c1916;
+      transform: rotate(-45deg) translate(1px,-1px);
+    }
+
+    /* Toggle switch. */
+    .switch {
+      width: 30px; height: 16px;
+      background: var(--bg-elev-3);
+      border: 1px solid var(--border-strong);
+      position: relative;
+      cursor: pointer;
+      transition: background 160ms;
+    }
+    .switch::after {
+      content: '';
+      position: absolute;
+      top: 1px; left: 1px;
+      width: 12px; height: 12px;
+      background: var(--fg-muted);
+      transition: all 160ms;
+    }
+    .switch.on { background: var(--accent); border-color: var(--accent); }
+    .switch.on::after { left: 15px; background: #1c1916; }
+
+    /* Sidebar collapsed. */
+    .collapsed-l { width: 0 !important; min-width: 0 !important; overflow: hidden; }
+    .collapsed-r { width: 0 !important; min-width: 0 !important; overflow: hidden; }
+
+    /* Tab underline. */
+    .tab {
+      padding: 8px 0;
+      margin-right: 18px;
+      font-size: 12.5px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--fg-dim);
+      border-bottom: 1.5px solid transparent;
+      cursor: pointer;
+      transition: color 120ms, border-color 120ms;
+    }
+    .tab:hover { color: var(--fg); }
+    .tab.active { color: var(--fg); border-bottom-color: var(--accent); }
+
+    .chip {
+      display: inline-flex; align-items: center;
+      gap: 6px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      padding: 3px 8px;
+      background: rgba(236,138,37,0.10);
+      border: 1px solid rgba(236,138,37,0.30);
+      color: var(--accent);
+    }
+    .chip button {
+      color: var(--accent);
+      opacity: 0.6;
+      line-height: 1;
+    }
+    .chip button:hover { opacity: 1; }
+  </style>
+</head>
+<body class="font-body antialiased">
+  <div class="layout flex h-screen w-screen">
+
+    <!-- ============== LEFT SIDEBAR ============== -->
+    <aside id="leftSidebar" class="flex flex-col shrink-0 border-r" style="width: 280px; min-width: 280px; background: var(--bg-elev-1); border-color: var(--border);">
+
+      <!-- Logo bar -->
+      <div class="flex items-center gap-2 px-4 h-14 border-b" style="border-color: var(--border);">
+        <!-- Inline 3-stroke claw mark -->
+        <svg width="22" height="22" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M6 4 C 9 12, 11 18, 9 28" stroke="#ec8a25" stroke-width="2.2" stroke-linecap="round"/>
+          <path d="M16 3 C 18 12, 18 19, 16 29" stroke="#ec8a25" stroke-width="2.2" stroke-linecap="round"/>
+          <path d="M26 4 C 23 12, 21 18, 23 28" stroke="#ec8a25" stroke-width="2.2" stroke-linecap="round"/>
+        </svg>
+        <span class="font-display text-2xl tracking-tight" style="font-weight: 500;">claw</span>
+        <span class="ml-auto text-[10px] font-mono uppercase tracking-widest" style="color: var(--fg-dim);">v0.1</span>
+      </div>
+
+      <!-- New session button -->
+      <div class="px-3 pt-3 pb-2">
+        <button id="newSessionBtn" class="w-full flex items-center justify-between px-3 py-2 cut-corner border text-sm font-medium transition-colors hover:bg-ember-500 hover:text-ink-900 hover:border-ember-500" style="background: var(--bg-elev-2); border-color: var(--border-strong); color: var(--fg);">
+          <span class="flex items-center gap-2">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            New session
+          </span>
+          <kbd>⌘K</kbd>
+        </button>
+      </div>
+
+      <!-- Section: Sessions -->
+      <div class="px-4 pt-3 pb-1 flex items-center justify-between">
+        <h2 class="text-[10px] font-mono uppercase tracking-widest" style="color: var(--fg-dim);">Sessions</h2>
+        <span id="sessionCount" class="text-[10px] font-mono" style="color: var(--fg-dim);">0</span>
+      </div>
+      <div id="sessionsList" class="scroll overflow-y-auto px-2 py-1" style="flex: 1 1 50%; min-height: 0;"></div>
+
+      <!-- Divider -->
+      <div class="border-t mx-3" style="border-color: var(--border);"></div>
+
+      <!-- Section: Jobs -->
+      <div class="px-4 pt-3 pb-1 flex items-center justify-between">
+        <h2 class="text-[10px] font-mono uppercase tracking-widest" style="color: var(--fg-dim);">Jobs</h2>
+        <span class="text-[10px] font-mono" style="color: var(--fg-dim);" id="jobsCount">0</span>
+      </div>
+      <div id="jobsList" class="scroll overflow-y-auto px-2 py-1 pb-3" style="flex: 1 1 35%; min-height: 0;"></div>
+    </aside>
+
+    <!-- ============== CENTER CHAT PANE ============== -->
+    <main class="flex-1 flex flex-col relative min-w-0" style="background: var(--bg-base);">
+      <div class="aurora"></div>
+
+      <!-- Header -->
+      <header class="relative z-10 flex items-center gap-3 px-5 h-14 border-b" style="border-color: var(--border); background: rgba(20,18,16,0.55); backdrop-filter: blur(8px);">
+        <button id="toggleLeft" title="Toggle sidebar" class="p-1.5 hover:bg-ink-700 transition-colors" style="color: var(--fg-muted);" aria-label="Toggle left sidebar">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16"/><path d="M9 4v16"/></svg>
+        </button>
+
+        <input id="sessionTitle" class="bg-transparent border-0 outline-none font-display text-xl tracking-tight px-1" style="color: var(--fg); min-width: 100px; flex: 0 1 auto;" />
+
+        <div class="ml-auto flex items-center gap-2">
+          <select id="modelSelect" class="bg-transparent border px-3 py-1.5 text-sm font-mono cut-corner cursor-pointer" style="border-color: var(--border-strong); color: var(--fg);">
+            <option value="gemma3:27b-cloud">gemma3:27b-cloud</option>
+            <option value="gemma3:4b">gemma3:4b</option>
+            <option value="gemma3:12b">gemma3:12b</option>
+            <option value="qwen2.5-coder:7b">qwen2.5-coder:7b</option>
+            <option value="llama3.2">llama3.2</option>
+          </select>
+
+          <button id="cmdPaletteBtn" class="px-2 py-1.5 text-xs font-mono border hover:bg-ink-700 transition-colors flex items-center gap-2" style="border-color: var(--border-strong); color: var(--fg-muted);" title="Command palette">
+            <kbd>⌘/</kbd>
+          </button>
+
+          <button id="themeToggle" class="p-1.5 hover:bg-ink-700 transition-colors" style="color: var(--fg-muted);" aria-label="Toggle theme">
+            <svg id="themeIconDark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            <svg id="themeIconLight" class="hidden" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+          </button>
+
+          <button id="settingsBtn" class="p-1.5 hover:bg-ink-700 transition-colors" style="color: var(--fg-muted);" aria-label="Settings">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+          </button>
+
+          <button id="toggleRight" title="Toggle config panel" class="p-1.5 hover:bg-ink-700 transition-colors" style="color: var(--fg-muted);" aria-label="Toggle right panel">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16"/><path d="M15 4v16"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- Messages -->
+      <div id="messages" class="scroll relative z-10 flex-1 overflow-y-auto px-6 md:px-12 py-8"></div>
+
+      <!-- Input area -->
+      <div class="relative z-10 border-t px-4 md:px-12 pt-3 pb-4" style="border-color: var(--border); background: rgba(20,18,16,0.55); backdrop-filter: blur(8px);">
+
+        <!-- Active agent + skills chips -->
+        <div id="activeChips" class="flex flex-wrap gap-2 mb-2"></div>
+
+        <div class="flex gap-2 items-end border" style="border-color: var(--border-strong); background: var(--bg-elev-2);">
+          <button id="attachBtn" title="Attach (coming soon)" class="p-3 hover:bg-ink-700 transition-colors shrink-0" style="color: var(--fg-dim);" aria-label="Attach file">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.4 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.49"/></svg>
+          </button>
+
+          <textarea id="prompt" rows="1" placeholder="Ask claw something. Cmd/Ctrl+Enter to send." class="flex-1 bg-transparent border-0 outline-none resize-none py-3 px-1 text-sm font-body leading-relaxed scroll" style="color: var(--fg); max-height: 200px;" aria-label="Chat input"></textarea>
+
+          <div class="flex items-center gap-3 px-3 pb-2 shrink-0">
+            <span id="tokenCount" class="text-[10px] font-mono" style="color: var(--fg-dim);">~0 tok</span>
+            <button id="sendBtn" class="cut-corner px-4 py-2 text-sm font-medium transition-all bg-ember-500 hover:bg-ember-400 text-ink-900 disabled:opacity-40 disabled:cursor-not-allowed">
+              Send
+            </button>
+          </div>
+        </div>
+        <div class="flex items-center justify-between mt-2 text-[10.5px] font-mono" style="color: var(--fg-dim);">
+          <span id="endpoint-label">endpoint: /v1</span>
+          <span class="flex items-center gap-2">
+            <span><kbd>⌘</kbd>+<kbd>↵</kbd> send</span>
+            <span class="opacity-50">·</span>
+            <span><kbd>Esc</kbd> stop</span>
+          </span>
+        </div>
+      </div>
+    </main>
+
+    <!-- ============== RIGHT CONFIG PANEL ============== -->
+    <aside id="rightSidebar" class="flex flex-col shrink-0 border-l" style="width: 340px; min-width: 340px; background: var(--bg-elev-1); border-color: var(--border);">
+      <div class="flex items-center px-5 h-14 border-b" style="border-color: var(--border);">
+        <h2 class="font-display text-lg tracking-tight">Console</h2>
+        <span class="ml-auto text-[10px] font-mono uppercase tracking-widest" style="color: var(--fg-dim);">Config</span>
+      </div>
+
+      <div class="px-5 flex border-b" style="border-color: var(--border);">
+        <div class="tab active" data-tab="agents">Agents</div>
+        <div class="tab" data-tab="skills">Skills</div>
+        <div class="tab" data-tab="integrations">Integrations</div>
+      </div>
+
+      <div id="rightContent" class="scroll overflow-y-auto flex-1 p-4"></div>
+    </aside>
+  </div>
+
+  <!-- Toast container -->
+  <div id="toasts" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 items-end"></div>
+
+  <!-- Modal container -->
+  <div id="modalRoot"></div>
+
+  <script>
+  /* ============================================================
+     STATE — single source of truth. Persisted to localStorage.
+     ============================================================ */
+  const STORAGE_KEYS = {
+    sessions:    'clawcode.sessions.v1',
+    agents:      'clawcode.agents.v1',
+    skills:      'clawcode.skills.v1',
+    integrations:'clawcode.integrations.v1',
+    theme:       'clawcode.theme.v1',
+    activeSession:'clawcode.activeSession.v1',
+  };
+  const DEFAULT_MODEL = 'gemma3:27b-cloud';
+  // Same-origin proxy when served over http(s); fall back to local Ollama when opened as file://
+  const OLLAMA_URL = (location.protocol === 'http:' || location.protocol === 'https:')
+    ? '/v1/chat/completions'
+    : 'http://127.0.0.1:11434/v1/chat/completions';
+
+  const state = {
+    sessions: [],
+    activeSessionId: null,
+    agents: [],
+    skills: [],
+    integrations: { obsidianVault: '', dailyNotePath: '', notebookSource: '' },
+    jobs: [],
+    rightTab: 'agents',
+    streaming: false,
+    abortCtrl: null,
+    leftCollapsed: false,
+    rightCollapsed: false,
+  };
+
+  /* ---------- Seeds ---------- */
+  function seedAgents() {
+    return [{
+      id: uid(),
+      name: 'Hermes',
+      description: 'Fast multi-step planning agent. Decomposes goals, drafts a plan, then executes.',
+      systemPrompt: [
+        'You are Hermes, a fast multi-step planning agent operating inside the claw-code CLI.',
+        'When given a goal, first restate it in one sentence, then produce a numbered plan of 3-7 atomic steps,',
+        'then execute the first step and ask for confirmation before destructive actions.',
+        'Be terse, concrete, and bias toward shipping working output over discussion.',
+      ].join(' '),
+      model: 'gemma3:27b-cloud',
+      active: true,
+    }];
+  }
+  function seedSkills() {
+    return [
+      { id: 'obsidian-notes',      name: 'obsidian-notes',      description: 'Read & append to your Obsidian vault via URI scheme.', enabled: true },
+      { id: 'notebooklm-research', name: 'notebooklm-research', description: 'Stash sources & ask questions in NotebookLM.',          enabled: false },
+      { id: 'web-search',          name: 'web-search',          description: 'Search the open web for fresh references.',              enabled: true },
+      { id: 'code-execution',      name: 'code-execution',      description: 'Run snippets in a local sandbox and capture output.',    enabled: false },
+      { id: 'file-read',           name: 'file-read',           description: 'Read local files relative to the project root.',         enabled: true },
+    ];
+  }
+  function seedJobs() {
+    return [
+      { id: uid(), name: 'index obsidian vault',     status: 'running', startedAt: Date.now() - 12000, progress: 64 },
+      { id: uid(), name: 'pull gemma3:27b-cloud',    status: 'done',    startedAt: Date.now() - 240000, finishedAt: Date.now() - 90000, progress: 100 },
+      { id: uid(), name: 'extract pdfs → notebooklm', status: 'queued',  progress: 0 },
+      { id: uid(), name: 'embed repo for code-search',status: 'failed', startedAt: Date.now() - 600000, finishedAt: Date.now() - 580000, progress: 28, error: 'OOM at chunk 412' },
+    ];
+  }
+  function seedSession(title='untitled session') {
+    return { id: uid(), title, createdAt: Date.now(), messages: [] };
+  }
+
+  function uid() { return Math.random().toString(36).slice(2, 10); }
+
+  /* ---------- Persistence ---------- */
+  function load() {
+    try {
+      state.sessions     = JSON.parse(localStorage.getItem(STORAGE_KEYS.sessions))     || [];
+      state.agents       = JSON.parse(localStorage.getItem(STORAGE_KEYS.agents))       || seedAgents();
+      state.skills       = JSON.parse(localStorage.getItem(STORAGE_KEYS.skills))       || seedSkills();
+      state.integrations = JSON.parse(localStorage.getItem(STORAGE_KEYS.integrations)) || state.integrations;
+      state.activeSessionId = localStorage.getItem(STORAGE_KEYS.activeSession) || null;
+    } catch (e) {
+      console.warn('Resetting corrupt storage', e);
+      state.agents = seedAgents();
+      state.skills = seedSkills();
+    }
+    if (!state.sessions.length) {
+      const s = seedSession('welcome to claw');
+      s.messages.push({
+        role: 'assistant',
+        content: '**claw** is a local-first agent console.\n\nPick a model up top, start typing, and your tokens stream straight from `ollama serve`.\n\nTry:\n- ask Hermes to plan a refactor\n- toggle skills in the right panel\n- pop a daily note into Obsidian',
+      });
+      state.sessions.push(s);
+      state.activeSessionId = s.id;
+      persist();
+    }
+    if (!state.activeSessionId || !state.sessions.find(s => s.id === state.activeSessionId)) {
+      state.activeSessionId = state.sessions[0].id;
+    }
+    state.jobs = seedJobs();
+    const theme = localStorage.getItem(STORAGE_KEYS.theme) || 'dark';
+    applyTheme(theme);
+  }
+  function persist() {
+    localStorage.setItem(STORAGE_KEYS.sessions, JSON.stringify(state.sessions));
+    localStorage.setItem(STORAGE_KEYS.agents, JSON.stringify(state.agents));
+    localStorage.setItem(STORAGE_KEYS.skills, JSON.stringify(state.skills));
+    localStorage.setItem(STORAGE_KEYS.integrations, JSON.stringify(state.integrations));
+    localStorage.setItem(STORAGE_KEYS.activeSession, state.activeSessionId);
+  }
+
+  /* ---------- Theme ---------- */
+  function applyTheme(theme) {
+    const html = document.documentElement;
+    if (theme === 'light') {
+      html.classList.remove('dark');
+      html.classList.add('light');
+      document.getElementById('themeIconDark').classList.add('hidden');
+      document.getElementById('themeIconLight').classList.remove('hidden');
+    } else {
+      html.classList.remove('light');
+      html.classList.add('dark');
+      document.getElementById('themeIconDark').classList.remove('hidden');
+      document.getElementById('themeIconLight').classList.add('hidden');
+    }
+    localStorage.setItem(STORAGE_KEYS.theme, theme);
+  }
+
+  /* ============================================================
+     RENDERERS
+     ============================================================ */
+  function activeSession() {
+    return state.sessions.find(s => s.id === state.activeSessionId);
+  }
+
+  function renderSessions() {
+    const list = document.getElementById('sessionsList');
+    list.innerHTML = '';
+    document.getElementById('sessionCount').textContent = String(state.sessions.length);
+
+    state.sessions
+      .slice()
+      .sort((a, b) => (b.lastAt || b.createdAt) - (a.lastAt || a.createdAt))
+      .forEach(s => {
+        const isActive = s.id === state.activeSessionId;
+        const row = document.createElement('div');
+        row.className = `rail group flex flex-col px-3 py-2 mb-0.5 cursor-pointer ${isActive ? 'active' : ''}`;
+        row.tabIndex = 0;
+        row.setAttribute('role', 'button');
+        row.setAttribute('aria-label', `Session: ${s.title}`);
+
+        const ts = new Date(s.lastAt || s.createdAt);
+        const tsLabel = ts.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+        row.innerHTML = `
+          <div class="flex items-center gap-2">
+            <span class="font-medium text-sm truncate flex-1" style="color: var(--fg);">${escapeHtml(s.title)}</span>
+            <button data-act="rename" class="opacity-0 group-hover:opacity-100 p-1 hover:text-ember-400" title="Rename" aria-label="Rename session" style="color: var(--fg-dim);">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+            </button>
+            <button data-act="delete" class="opacity-0 group-hover:opacity-100 p-1 hover:text-rust-400" title="Delete" aria-label="Delete session" style="color: var(--fg-dim);">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/></svg>
+            </button>
+          </div>
+          <div class="flex items-center gap-2 text-[10.5px] font-mono mt-0.5" style="color: var(--fg-dim);">
+            <span>${tsLabel}</span>
+            <span class="opacity-40">·</span>
+            <span>${s.messages.length} msg</span>
+          </div>
+        `;
+        row.addEventListener('click', () => switchSession(s.id));
+        row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchSession(s.id); } });
+        row.addEventListener('contextmenu', e => { e.preventDefault(); showSessionMenu(s.id, e.clientX, e.clientY); });
+        row.querySelector('[data-act="rename"]').addEventListener('click', e => { e.stopPropagation(); renameSession(s.id); });
+        row.querySelector('[data-act="delete"]').addEventListener('click', e => { e.stopPropagation(); deleteSession(s.id); });
+        list.appendChild(row);
+      });
+  }
+
+  function renderJobs() {
+    const list = document.getElementById('jobsList');
+    list.innerHTML = '';
+    document.getElementById('jobsCount').textContent = String(state.jobs.length);
+    const statusColor = {
+      running: { bg: 'rgba(236,138,37,0.14)', fg: '#ec8a25', border: 'rgba(236,138,37,0.4)' },
+      done:    { bg: 'rgba(127,176,105,0.14)', fg: '#7fb069', border: 'rgba(127,176,105,0.4)' },
+      failed:  { bg: 'rgba(200,85,61,0.14)',   fg: '#c8553d', border: 'rgba(200,85,61,0.4)' },
+      queued:  { bg: 'rgba(168,160,148,0.10)', fg: '#a8a094', border: 'rgba(168,160,148,0.3)' },
+    };
+    state.jobs.forEach(j => {
+      const c = statusColor[j.status];
+      const elapsed = j.startedAt
+        ? ((j.finishedAt || Date.now()) - j.startedAt) / 1000
+        : 0;
+      const elapsedLabel = elapsed < 60
+        ? `${elapsed.toFixed(0)}s`
+        : `${Math.floor(elapsed/60)}m ${(elapsed%60).toFixed(0)}s`;
+
+      const row = document.createElement('div');
+      row.className = 'rail flex flex-col px-3 py-2 mb-0.5';
+      row.innerHTML = `
+        <div class="flex items-center gap-2">
+          <span class="text-sm truncate flex-1" style="color: var(--fg);">${escapeHtml(j.name)}</span>
+          <span class="${j.status === 'running' ? 'pulse-dot' : ''} text-[9px] uppercase tracking-widest font-mono px-1.5 py-0.5"
+                style="background: ${c.bg}; color: ${c.fg}; border: 1px solid ${c.border};">
+            ${j.status}
+          </span>
+        </div>
+        <div class="flex items-center gap-2 mt-1.5">
+          <div class="flex-1 h-1" style="background: var(--bg-elev-3);">
+            <div style="width: ${j.progress}%; height: 100%; background: ${c.fg}; transition: width 600ms cubic-bezier(0.2,0.8,0.2,1);"></div>
+          </div>
+          <span class="text-[10px] font-mono" style="color: var(--fg-dim); min-width: 38px; text-align: right;">${j.startedAt ? elapsedLabel : '—'}</span>
+        </div>
+        ${j.error ? `<div class="text-[10px] font-mono mt-1" style="color: var(--rust-400, #c8553d);">${escapeHtml(j.error)}</div>` : ''}
+      `;
+      list.appendChild(row);
+    });
+  }
+
+  function renderActiveChips() {
+    const c = document.getElementById('activeChips');
+    c.innerHTML = '';
+    const activeAgent = state.agents.find(a => a.active);
+    if (activeAgent) {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.innerHTML = `
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v2"/></svg>
+        agent: ${escapeHtml(activeAgent.name)}
+        <button data-id="${activeAgent.id}" aria-label="Deactivate agent">×</button>
+      `;
+      chip.querySelector('button').addEventListener('click', () => {
+        activeAgent.active = false;
+        persist();
+        renderRight();
+        renderActiveChips();
+      });
+      c.appendChild(chip);
+    }
+    state.skills.filter(s => s.enabled).forEach(s => {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.innerHTML = `
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2l3 7h7l-5.5 4.5 2 7L12 17l-6.5 3.5 2-7L2 9h7z"/></svg>
+        ${escapeHtml(s.name)}
+        <button data-id="${s.id}" aria-label="Disable skill">×</button>
+      `;
+      chip.querySelector('button').addEventListener('click', () => {
+        s.enabled = false;
+        persist();
+        renderRight();
+        renderActiveChips();
+      });
+      c.appendChild(chip);
+    });
+    if (!activeAgent && !state.skills.some(s => s.enabled)) {
+      c.innerHTML = `<span class="text-[10.5px] font-mono" style="color: var(--fg-dim);">no agent or skills active — raw model</span>`;
+    }
+  }
+
+  function renderMessages() {
+    const sess = activeSession();
+    const cont = document.getElementById('messages');
+    cont.innerHTML = '';
+
+    if (!sess.messages.length) {
+      cont.innerHTML = `
+        <div class="max-w-2xl mx-auto text-center mt-20 select-none">
+          <div class="font-display text-5xl tracking-tight mb-3" style="color: var(--fg); font-weight: 300;">
+            What are we <em style="color: var(--accent); font-weight: 500;">building</em>?
+          </div>
+          <div class="font-body text-sm" style="color: var(--fg-muted);">
+            local model · streaming via ollama · zero telemetry
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    sess.messages.forEach(m => cont.appendChild(messageNode(m)));
+    requestAnimationFrame(() => cont.scrollTop = cont.scrollHeight);
+  }
+
+  function messageNode(m) {
+    const wrap = document.createElement('div');
+    wrap.className = `flex mb-6 ${m.role === 'user' ? 'justify-end' : 'justify-start'}`;
+    const inner = document.createElement('div');
+    inner.className = `${m.role === 'user' ? 'bubble-user max-w-2xl px-4 py-3' : 'bubble-assistant max-w-3xl'}`;
+    if (m.role === 'user') {
+      inner.style.borderRadius = '0';
+      inner.classList.add('cut-corner');
+    }
+
+    if (m.role === 'assistant') {
+      const head = document.createElement('div');
+      head.className = 'flex items-center gap-2 mb-1.5';
+      head.innerHTML = `
+        <svg width="14" height="14" viewBox="0 0 32 32" aria-hidden="true">
+          <path d="M6 4 C 9 12, 11 18, 9 28" stroke="#ec8a25" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M16 3 C 18 12, 18 19, 16 29" stroke="#ec8a25" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M26 4 C 23 12, 21 18, 23 28" stroke="#ec8a25" stroke-width="2" stroke-linecap="round" fill="none"/>
+        </svg>
+        <span class="text-[10px] font-mono uppercase tracking-widest" style="color: var(--fg-dim);">claw · ${escapeHtml(m.model || activeSession().model || DEFAULT_MODEL)}</span>
+      `;
+      inner.appendChild(head);
+    }
+
+    const body = document.createElement('div');
+    body.className = 'prose text-[14.5px]';
+    body.dataset.role = m.role;
+    body.innerHTML = renderMarkdown(m.content || '');
+    if (m.streaming) {
+      const caret = document.createElement('span');
+      caret.className = 'caret';
+      body.appendChild(caret);
+    }
+    if (m.error) {
+      const err = document.createElement('div');
+      err.className = 'mt-2 p-3 border text-[12.5px] font-mono';
+      err.style.borderColor = 'rgba(200,85,61,0.4)';
+      err.style.background  = 'rgba(200,85,61,0.08)';
+      err.style.color = '#c8553d';
+      err.innerHTML = `
+        <div class="font-bold uppercase tracking-widest text-[10px] mb-1.5">request failed</div>
+        <div style="color: var(--fg);">${escapeHtml(m.error)}</div>
+        <div class="mt-2 pt-2 border-t" style="border-color: rgba(200,85,61,0.3); color: var(--fg-muted);">
+          <div>· Is Ollama running? Try <span style="color: var(--accent);">ollama serve</span></div>
+          <div>· Pull the model: <span style="color: var(--accent);">ollama pull ${escapeHtml(activeSession().model || DEFAULT_MODEL)}</span></div>
+          <div>· CORS error? Run with <span style="color: var(--accent);">OLLAMA_ORIGINS='*' ollama serve</span></div>
+        </div>
+      `;
+      inner.appendChild(err);
+    }
+    inner.appendChild(body);
+    wrap.appendChild(inner);
+
+    // Wire copy buttons on code blocks.
+    inner.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        const code = pre.querySelector('code')?.innerText ?? pre.innerText;
+        navigator.clipboard.writeText(code).then(() => {
+          btn.textContent = 'copied';
+          setTimeout(() => btn.textContent = 'copy', 1200);
+        });
+      });
+      pre.appendChild(btn);
+    });
+
+    return wrap;
+  }
+
+  function renderRight() {
+    const cont = document.getElementById('rightContent');
+    cont.innerHTML = '';
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === state.rightTab));
+
+    if (state.rightTab === 'agents')        renderAgentsTab(cont);
+    if (state.rightTab === 'skills')        renderSkillsTab(cont);
+    if (state.rightTab === 'integrations')  renderIntegrationsTab(cont);
+  }
+
+  function renderAgentsTab(cont) {
+    const newBtn = document.createElement('button');
+    newBtn.className = 'cut-corner w-full px-3 py-2 text-sm font-medium border mb-3 flex items-center justify-center gap-2 hover:bg-ember-500 hover:text-ink-900 hover:border-ember-500 transition-colors';
+    newBtn.style.borderColor = 'var(--border-strong)';
+    newBtn.style.color = 'var(--fg)';
+    newBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg> New agent`;
+    newBtn.addEventListener('click', () => openAgentModal());
+    cont.appendChild(newBtn);
+
+    state.agents.forEach(agent => {
+      const card = document.createElement('div');
+      card.className = 'mb-3 p-3 border';
+      card.style.borderColor = 'var(--border)';
+      card.style.background = 'var(--bg-elev-2)';
+      card.innerHTML = `
+        <div class="flex items-start gap-2">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="font-display text-base tracking-tight" style="color: var(--fg);">${escapeHtml(agent.name)}</span>
+              <span class="text-[10px] font-mono uppercase tracking-widest" style="color: var(--fg-dim);">${escapeHtml(agent.model)}</span>
+            </div>
+            <p class="text-[12.5px] mt-1 leading-relaxed" style="color: var(--fg-muted);">${escapeHtml(agent.description)}</p>
+          </div>
+          <div data-id="${agent.id}" class="switch ${agent.active ? 'on' : ''}" role="switch" aria-checked="${agent.active}" tabindex="0" aria-label="Activate ${escapeHtml(agent.name)}"></div>
+        </div>
+        <details class="mt-2">
+          <summary class="text-[10.5px] font-mono uppercase tracking-widest cursor-pointer select-none" style="color: var(--fg-dim);">system prompt</summary>
+          <pre class="mt-2 p-2 text-[11.5px] font-mono whitespace-pre-wrap" style="background: var(--bg-elev-1); color: var(--fg-muted); border: 1px solid var(--border);">${escapeHtml(agent.systemPrompt)}</pre>
+        </details>
+        <div class="flex gap-2 mt-2">
+          <button data-act="edit" class="text-[11px] font-mono uppercase tracking-widest hover:text-ember-400 transition-colors" style="color: var(--fg-dim);">edit</button>
+          <button data-act="delete" class="text-[11px] font-mono uppercase tracking-widest hover:text-rust-400 transition-colors" style="color: var(--fg-dim);">delete</button>
+        </div>
+      `;
+      const sw = card.querySelector('.switch');
+      const toggleAgent = () => {
+        if (agent.active) {
+          agent.active = false;
+        } else {
+          state.agents.forEach(a => a.active = false);
+          agent.active = true;
+        }
+        persist();
+        renderRight();
+        renderActiveChips();
+      };
+      sw.addEventListener('click', toggleAgent);
+      sw.addEventListener('keydown', e => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggleAgent(); } });
+      card.querySelector('[data-act="edit"]').addEventListener('click', () => openAgentModal(agent));
+      card.querySelector('[data-act="delete"]').addEventListener('click', () => {
+        if (state.agents.length <= 1) { toast('Need at least one agent.'); return; }
+        if (confirm(`Delete agent "${agent.name}"?`)) {
+          state.agents = state.agents.filter(a => a.id !== agent.id);
+          persist();
+          renderRight();
+          renderActiveChips();
+        }
+      });
+      cont.appendChild(card);
+    });
+  }
+
+  function renderSkillsTab(cont) {
+    const note = document.createElement('p');
+    note.className = 'text-[11.5px] mb-3 leading-relaxed';
+    note.style.color = 'var(--fg-muted)';
+    note.innerHTML = `Active skills are appended to the system prompt. This UI is the scaffold — actual tool execution is wired through the CLI.`;
+    cont.appendChild(note);
+
+    state.skills.forEach(skill => {
+      const row = document.createElement('label');
+      row.className = 'flex items-start gap-3 p-3 mb-1.5 cursor-pointer border hover:border-ember-500 transition-colors';
+      row.style.borderColor = 'var(--border)';
+      row.style.background = 'var(--bg-elev-2)';
+      row.innerHTML = `
+        <span class="check ${skill.enabled ? 'on' : ''} mt-0.5" role="checkbox" aria-checked="${skill.enabled}" tabindex="0"></span>
+        <div class="flex-1 min-w-0">
+          <div class="font-mono text-[13px]" style="color: var(--fg);">${escapeHtml(skill.name)}</div>
+          <div class="text-[11.5px] mt-0.5 leading-relaxed" style="color: var(--fg-muted);">${escapeHtml(skill.description)}</div>
+        </div>
+      `;
+      const toggle = () => {
+        skill.enabled = !skill.enabled;
+        persist();
+        renderRight();
+        renderActiveChips();
+      };
+      row.addEventListener('click', e => { e.preventDefault(); toggle(); });
+      row.querySelector('.check').addEventListener('keydown', e => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggle(); } });
+      cont.appendChild(row);
+    });
+  }
+
+  function renderIntegrationsTab(cont) {
+    // ----- Obsidian card -----
+    const obs = document.createElement('div');
+    obs.className = 'p-3 border mb-3';
+    obs.style.borderColor = 'var(--border)';
+    obs.style.background = 'var(--bg-elev-2)';
+    obs.innerHTML = `
+      <div class="flex items-center gap-2 mb-2">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="#8b5cf6" aria-hidden="true"><path d="M12 2 L20 8 L18 20 L6 20 L4 8 Z" opacity="0.85"/></svg>
+        <span class="font-display text-base tracking-tight" style="color: var(--fg);">Obsidian</span>
+      </div>
+      <p class="text-[11.5px] mb-3 leading-relaxed" style="color: var(--fg-muted);">Vault-aware via the obsidian:// URI scheme. Works when Obsidian is installed locally.</p>
+
+      <label class="block text-[10px] font-mono uppercase tracking-widest mb-1" style="color: var(--fg-dim);">Vault name</label>
+      <input id="obsVault" class="w-full bg-transparent border px-2 py-1.5 mb-2 text-sm font-mono" style="border-color: var(--border-strong); color: var(--fg);" placeholder="e.g. notes" value="${escapeHtml(state.integrations.obsidianVault || '')}" />
+
+      <button id="obsOpen" class="cut-corner w-full px-3 py-2 mb-3 text-sm font-medium bg-ember-500 hover:bg-ember-400 text-ink-900 transition-colors">Open vault</button>
+
+      <label class="block text-[10px] font-mono uppercase tracking-widest mb-1" style="color: var(--fg-dim);">Append to note (path)</label>
+      <input id="obsPath" class="w-full bg-transparent border px-2 py-1.5 mb-2 text-sm font-mono" style="border-color: var(--border-strong); color: var(--fg);" placeholder="Daily/2026-04-21.md" value="${escapeHtml(state.integrations.dailyNotePath || '')}" />
+
+      <button id="obsAppend" class="cut-corner w-full px-3 py-2 text-sm font-medium border hover:bg-ember-500 hover:text-ink-900 hover:border-ember-500 transition-colors" style="border-color: var(--border-strong); color: var(--fg);">Append last reply</button>
+    `;
+    cont.appendChild(obs);
+
+    obs.querySelector('#obsVault').addEventListener('input', e => {
+      state.integrations.obsidianVault = e.target.value.trim(); persist();
+    });
+    obs.querySelector('#obsPath').addEventListener('input', e => {
+      state.integrations.dailyNotePath = e.target.value.trim(); persist();
+    });
+    obs.querySelector('#obsOpen').addEventListener('click', () => {
+      const v = state.integrations.obsidianVault;
+      if (!v) return toast('Set a vault name first.');
+      window.location.href = `obsidian://open?vault=${encodeURIComponent(v)}`;
+      toast(`Opening Obsidian vault "${v}"…`);
+    });
+    obs.querySelector('#obsAppend').addEventListener('click', () => {
+      const v = state.integrations.obsidianVault;
+      const p = state.integrations.dailyNotePath || `Inbox/claw-${new Date().toISOString().slice(0,10)}.md`;
+      if (!v) return toast('Set a vault name first.');
+      const sess = activeSession();
+      const last = [...sess.messages].reverse().find(m => m.role === 'assistant');
+      if (!last) return toast('No assistant reply yet.');
+      const url = `obsidian://new?vault=${encodeURIComponent(v)}&file=${encodeURIComponent(p)}&content=${encodeURIComponent(last.content)}`;
+      window.location.href = url;
+      toast(`Sending to ${p}`);
+    });
+
+    // ----- NotebookLM card -----
+    const nlm = document.createElement('div');
+    nlm.className = 'p-3 border';
+    nlm.style.borderColor = 'var(--border)';
+    nlm.style.background = 'var(--bg-elev-2)';
+    nlm.innerHTML = `
+      <div class="flex items-center gap-2 mb-2">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4285f4" stroke-width="2.5" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
+        <span class="font-display text-base tracking-tight" style="color: var(--fg);">NotebookLM</span>
+      </div>
+      <p class="text-[11.5px] mb-3 leading-relaxed" style="color: var(--fg-muted);">Send sources to NotebookLM. There's no public API yet, so this opens the web app — paste-ready.</p>
+
+      <button id="nlmOpen" class="cut-corner w-full px-3 py-2 mb-3 text-sm font-medium bg-ember-500 hover:bg-ember-400 text-ink-900 transition-colors">Open NotebookLM</button>
+
+      <label class="block text-[10px] font-mono uppercase tracking-widest mb-1" style="color: var(--fg-dim);">Source URL</label>
+      <input id="nlmSrc" class="w-full bg-transparent border px-2 py-1.5 mb-2 text-sm font-mono" style="border-color: var(--border-strong); color: var(--fg);" placeholder="https://example.com/article" value="${escapeHtml(state.integrations.notebookSource || '')}" />
+
+      <button id="nlmSend" class="cut-corner w-full px-3 py-2 text-sm font-medium border hover:bg-ember-500 hover:text-ink-900 hover:border-ember-500 transition-colors" style="border-color: var(--border-strong); color: var(--fg);">Send to NotebookLM</button>
+      <p class="text-[10.5px] mt-2 font-mono" style="color: var(--fg-dim);">copies URL → opens notebooklm.google.com</p>
+    `;
+    cont.appendChild(nlm);
+
+    nlm.querySelector('#nlmSrc').addEventListener('input', e => {
+      state.integrations.notebookSource = e.target.value.trim(); persist();
+    });
+    nlm.querySelector('#nlmOpen').addEventListener('click', () => {
+      window.open('https://notebooklm.google.com/', '_blank', 'noopener');
+    });
+    nlm.querySelector('#nlmSend').addEventListener('click', () => {
+      const u = state.integrations.notebookSource;
+      if (!u) return toast('Add a source URL first.');
+      navigator.clipboard.writeText(u).then(() => {
+        window.open('https://notebooklm.google.com/', '_blank', 'noopener');
+        toast('URL copied — paste as a new source.');
+      });
+    });
+  }
+
+  /* ============================================================
+     SESSION OPS
+     ============================================================ */
+  function switchSession(id) {
+    state.activeSessionId = id;
+    persist();
+    const s = activeSession();
+    document.getElementById('sessionTitle').value = s.title;
+    document.getElementById('modelSelect').value = s.model || DEFAULT_MODEL;
+    renderSessions();
+    renderMessages();
+  }
+  function newSession() {
+    const s = seedSession(`session ${state.sessions.length + 1}`);
+    s.model = document.getElementById('modelSelect').value;
+    state.sessions.unshift(s);
+    state.activeSessionId = s.id;
+    persist();
+    renderSessions();
+    renderMessages();
+    document.getElementById('sessionTitle').value = s.title;
+    document.getElementById('prompt').focus();
+    toast('New session');
+  }
+  function renameSession(id) {
+    const s = state.sessions.find(x => x.id === id);
+    const next = prompt('Rename session', s.title);
+    if (next && next.trim()) {
+      s.title = next.trim();
+      persist();
+      renderSessions();
+      if (id === state.activeSessionId) document.getElementById('sessionTitle').value = s.title;
+    }
+  }
+  function deleteSession(id) {
+    if (state.sessions.length <= 1) return toast('Keep at least one session.');
+    if (!confirm('Delete this session?')) return;
+    state.sessions = state.sessions.filter(s => s.id !== id);
+    if (state.activeSessionId === id) state.activeSessionId = state.sessions[0].id;
+    persist();
+    renderSessions();
+    switchSession(state.activeSessionId);
+  }
+  function showSessionMenu(id, x, y) {
+    // Tiny in-place menu for right-click.
+    document.querySelectorAll('.ctx-menu').forEach(n => n.remove());
+    const menu = document.createElement('div');
+    menu.className = 'ctx-menu fixed z-50 border shadow-edge';
+    menu.style.cssText = `top:${y}px;left:${x}px;background:var(--bg-elev-2);border-color:var(--border-strong);min-width:140px;`;
+    menu.innerHTML = `
+      <button class="block w-full text-left px-3 py-2 text-sm hover:bg-ink-700" data-act="rename" style="color: var(--fg);">Rename</button>
+      <button class="block w-full text-left px-3 py-2 text-sm hover:bg-ink-700" data-act="delete" style="color: var(--rust-400, #c8553d);">Delete</button>
+    `;
+    document.body.appendChild(menu);
+    menu.querySelector('[data-act="rename"]').onclick = () => { renameSession(id); menu.remove(); };
+    menu.querySelector('[data-act="delete"]').onclick = () => { deleteSession(id); menu.remove(); };
+    setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+  }
+
+  /* ============================================================
+     CHAT — actually streams from Ollama.
+     ============================================================ */
+  async function send() {
+    if (state.streaming) return;
+    const promptEl = document.getElementById('prompt');
+    const text = promptEl.value.trim();
+    if (!text) return;
+    const sess = activeSession();
+    sess.model = document.getElementById('modelSelect').value;
+    sess.lastAt = Date.now();
+
+    // Auto-title from first user message.
+    if (sess.messages.length === 0 && /untitled|session \d+|welcome to claw/i.test(sess.title)) {
+      sess.title = text.slice(0, 48) + (text.length > 48 ? '…' : '');
+      document.getElementById('sessionTitle').value = sess.title;
+    }
+
+    sess.messages.push({ role: 'user', content: text });
+    promptEl.value = '';
+    autoresize();
+    updateTokenCount();
+
+    const assistantMsg = { role: 'assistant', content: '', streaming: true, model: sess.model };
+    sess.messages.push(assistantMsg);
+    renderMessages();
+    renderSessions();
+    persist();
+
+    const messages = buildPayloadMessages(sess);
+    state.streaming = true;
+    state.abortCtrl = new AbortController();
+    const sendBtn = document.getElementById('sendBtn');
+    sendBtn.textContent = 'Stop';
+    sendBtn.classList.remove('bg-ember-500', 'hover:bg-ember-400');
+    sendBtn.classList.add('bg-rust-500', 'hover:bg-rust-400');
+
+    try {
+      const resp = await fetch(OLLAMA_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ollama',
+        },
+        body: JSON.stringify({ model: sess.model, messages, stream: true }),
+        signal: state.abortCtrl.signal,
+      });
+
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      const messagesEl = document.getElementById('messages');
+      const userScrolledUp = () => messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight > 80;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line.startsWith('data:')) continue;
+          const payload = line.slice(5).trim();
+          if (payload === '[DONE]') break;
+          try {
+            const obj = JSON.parse(payload);
+            const delta = obj.choices?.[0]?.delta?.content || '';
+            if (delta) {
+              assistantMsg.content += delta;
+              const wasAtBottom = !userScrolledUp();
+              renderMessages();
+              if (wasAtBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+          } catch (e) { /* ignore partial JSON */ }
+        }
+      }
+      assistantMsg.streaming = false;
+      renderMessages();
+    } catch (err) {
+      assistantMsg.streaming = false;
+      const msg = err.name === 'AbortError'
+        ? '(stopped)'
+        : (err.message.includes('Failed to fetch')
+            ? `Could not reach the server. If running locally, start it with \`cd web && npm start\`. If deployed, check that OLLAMA_API_KEY is set in Railway → Variables.`
+            : err.message);
+      assistantMsg.error = msg;
+      renderMessages();
+    } finally {
+      state.streaming = false;
+      state.abortCtrl = null;
+      sendBtn.textContent = 'Send';
+      sendBtn.classList.add('bg-ember-500', 'hover:bg-ember-400');
+      sendBtn.classList.remove('bg-rust-500', 'hover:bg-rust-400');
+      sess.lastAt = Date.now();
+      persist();
+      renderSessions();
+    }
+  }
+
+  function stopStreaming() {
+    if (state.abortCtrl) state.abortCtrl.abort();
+  }
+
+  function buildPayloadMessages(sess) {
+    const out = [];
+    const agent = state.agents.find(a => a.active);
+    const enabledSkills = state.skills.filter(s => s.enabled);
+    let sys = agent ? agent.systemPrompt : '';
+    if (enabledSkills.length) {
+      const skillNote = `\n\nActive skills available to you (UI scaffolding — invoke conceptually): ${enabledSkills.map(s => s.name).join(', ')}.`;
+      sys = (sys || 'You are a helpful local assistant.') + skillNote;
+    }
+    if (sys) out.push({ role: 'system', content: sys });
+    sess.messages
+      .filter(m => !m.error && m.content)
+      .forEach(m => out.push({ role: m.role, content: m.content }));
+    return out;
+  }
+
+  /* ============================================================
+     AGENT MODAL
+     ============================================================ */
+  function openAgentModal(existing) {
+    const root = document.getElementById('modalRoot');
+    const isEdit = !!existing;
+    const a = existing || {
+      id: uid(),
+      name: '',
+      description: '',
+      systemPrompt: '',
+      model: DEFAULT_MODEL,
+      active: false,
+    };
+    root.innerHTML = `
+      <div class="modal-bg fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div class="border w-full max-w-lg" style="background: var(--bg-elev-2); border-color: var(--border-strong);">
+          <div class="px-5 py-3 border-b flex items-center" style="border-color: var(--border);">
+            <h3 class="font-display text-lg tracking-tight">${isEdit ? 'Edit agent' : 'New agent'}</h3>
+            <button id="closeModal" class="ml-auto p-1 hover:text-ember-400" style="color: var(--fg-muted);" aria-label="Close">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="p-5 space-y-3">
+            <div>
+              <label class="block text-[10px] font-mono uppercase tracking-widest mb-1" style="color: var(--fg-dim);">Name</label>
+              <input id="m_name" value="${escapeHtml(a.name)}" class="w-full bg-transparent border px-2 py-1.5 text-sm font-mono" style="border-color: var(--border-strong); color: var(--fg);" />
+            </div>
+            <div>
+              <label class="block text-[10px] font-mono uppercase tracking-widest mb-1" style="color: var(--fg-dim);">Description</label>
+              <input id="m_desc" value="${escapeHtml(a.description)}" class="w-full bg-transparent border px-2 py-1.5 text-sm" style="border-color: var(--border-strong); color: var(--fg);" />
+            </div>
+            <div>
+              <label class="block text-[10px] font-mono uppercase tracking-widest mb-1" style="color: var(--fg-dim);">Default model</label>
+              <select id="m_model" class="w-full bg-transparent border px-2 py-1.5 text-sm font-mono" style="border-color: var(--border-strong); color: var(--fg);">
+                ${['gemma3:27b-cloud','gemma3:4b','gemma3:12b','qwen2.5-coder:7b','llama3.2'].map(m => `<option ${m===a.model?'selected':''}>${m}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label class="block text-[10px] font-mono uppercase tracking-widest mb-1" style="color: var(--fg-dim);">System prompt</label>
+              <textarea id="m_sys" rows="6" class="w-full bg-transparent border px-2 py-1.5 text-sm font-mono leading-relaxed" style="border-color: var(--border-strong); color: var(--fg);">${escapeHtml(a.systemPrompt)}</textarea>
+            </div>
+          </div>
+          <div class="px-5 py-3 border-t flex justify-end gap-2" style="border-color: var(--border);">
+            <button id="m_cancel" class="px-4 py-2 text-sm font-medium border hover:bg-ink-700 transition-colors" style="border-color: var(--border-strong); color: var(--fg);">Cancel</button>
+            <button id="m_save" class="cut-corner px-4 py-2 text-sm font-medium bg-ember-500 hover:bg-ember-400 text-ink-900">Save agent</button>
+          </div>
+        </div>
+      </div>
+    `;
+    const close = () => { root.innerHTML = ''; };
+    root.querySelector('#closeModal').onclick = close;
+    root.querySelector('#m_cancel').onclick = close;
+    root.querySelector('.modal-bg').addEventListener('click', e => { if (e.target.classList.contains('modal-bg')) close(); });
+    root.querySelector('#m_save').onclick = () => {
+      const name = document.getElementById('m_name').value.trim();
+      if (!name) { toast('Name required.'); return; }
+      a.name = name;
+      a.description = document.getElementById('m_desc').value.trim();
+      a.model = document.getElementById('m_model').value;
+      a.systemPrompt = document.getElementById('m_sys').value;
+      if (!isEdit) state.agents.push(a);
+      persist();
+      renderRight();
+      renderActiveChips();
+      close();
+      toast(isEdit ? 'Agent updated' : 'Agent created');
+    };
+    setTimeout(() => document.getElementById('m_name').focus(), 30);
+  }
+
+  /* ============================================================
+     UTILITIES
+     ============================================================ */
+  function escapeHtml(s) {
+    return String(s ?? '')
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function renderMarkdown(src) {
+    if (!src) return '';
+    try {
+      marked.setOptions({ breaks: true, gfm: true });
+      return marked.parse(src);
+    } catch {
+      return escapeHtml(src);
+    }
+  }
+  function autoresize() {
+    const el = document.getElementById('prompt');
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 200) + 'px';
+  }
+  function updateTokenCount() {
+    const text = document.getElementById('prompt').value;
+    // Rough heuristic — 1 token ≈ 4 chars.
+    const tok = Math.max(0, Math.round(text.length / 4));
+    document.getElementById('tokenCount').textContent = `~${tok} tok`;
+  }
+  function toast(msg) {
+    const wrap = document.getElementById('toasts');
+    const el = document.createElement('div');
+    el.className = 'toast-enter px-4 py-2 text-sm font-mono border shadow-edge';
+    el.style.cssText = 'background: var(--bg-elev-2); border-color: var(--border-strong); color: var(--fg);';
+    el.textContent = msg;
+    wrap.appendChild(el);
+    requestAnimationFrame(() => el.classList.add('toast-show'));
+    setTimeout(() => {
+      el.classList.remove('toast-show');
+      el.classList.add('toast-enter');
+      setTimeout(() => el.remove(), 300);
+    }, 2400);
+  }
+
+  /* ============================================================
+     EVENT WIRING
+     ============================================================ */
+  function wire() {
+    // Sidebar collapse.
+    document.getElementById('toggleLeft').addEventListener('click', () => {
+      state.leftCollapsed = !state.leftCollapsed;
+      document.getElementById('leftSidebar').classList.toggle('collapsed-l', state.leftCollapsed);
+    });
+    document.getElementById('toggleRight').addEventListener('click', () => {
+      state.rightCollapsed = !state.rightCollapsed;
+      document.getElementById('rightSidebar').classList.toggle('collapsed-r', state.rightCollapsed);
+    });
+
+    document.getElementById('newSessionBtn').addEventListener('click', newSession);
+
+    document.getElementById('sessionTitle').addEventListener('change', e => {
+      const sess = activeSession();
+      sess.title = e.target.value.trim() || 'untitled';
+      persist();
+      renderSessions();
+    });
+
+    document.getElementById('modelSelect').addEventListener('change', e => {
+      const sess = activeSession();
+      sess.model = e.target.value;
+      persist();
+    });
+
+    document.getElementById('themeToggle').addEventListener('click', () => {
+      const cur = document.documentElement.classList.contains('light') ? 'light' : 'dark';
+      applyTheme(cur === 'light' ? 'dark' : 'light');
+    });
+
+    document.getElementById('cmdPaletteBtn').addEventListener('click', () => {
+      toast('Command palette — coming soon.');
+    });
+    document.getElementById('settingsBtn').addEventListener('click', () => {
+      toast('Settings live in the right panel for now.');
+    });
+    document.getElementById('attachBtn').addEventListener('click', () => {
+      toast('Attachments — coming soon.');
+    });
+
+    // Tabs.
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        state.rightTab = tab.dataset.tab;
+        renderRight();
+      });
+    });
+
+    // Prompt.
+    const promptEl = document.getElementById('prompt');
+    promptEl.addEventListener('input', () => { autoresize(); updateTokenCount(); });
+    promptEl.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        send();
+      }
+    });
+
+    // Send button doubles as Stop while streaming.
+    document.getElementById('sendBtn').addEventListener('click', () => {
+      if (state.streaming) stopStreaming();
+      else send();
+    });
+
+    // Global shortcuts.
+    document.addEventListener('keydown', e => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        newSession();
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === '/') {
+        e.preventDefault();
+        toast('Command palette — coming soon.');
+      }
+      if (e.key === 'Escape') {
+        if (state.streaming) stopStreaming();
+        document.querySelectorAll('.ctx-menu').forEach(n => n.remove());
+        const modal = document.querySelector('#modalRoot .modal-bg');
+        if (modal) document.getElementById('modalRoot').innerHTML = '';
+      }
+    });
+
+    // Periodic re-render of running jobs (elapsed time tick).
+    setInterval(() => {
+      if (state.jobs.some(j => j.status === 'running')) renderJobs();
+    }, 1000);
+  }
+
+  /* ============================================================
+     BOOT
+     ============================================================ */
+  function boot() {
+    load();
+    const sess = activeSession();
+    document.getElementById('sessionTitle').value = sess.title;
+    document.getElementById('modelSelect').value = sess.model || DEFAULT_MODEL;
+    wire();
+    renderSessions();
+    renderJobs();
+    renderMessages();
+    renderRight();
+    renderActiveChips();
+    autoresize();
+    updateTokenCount();
+  }
+
+  document.addEventListener('DOMContentLoaded', boot);
+  </script>
+</body>
+</html>

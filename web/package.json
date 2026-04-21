@@ -1,0 +1,13 @@
+{
+  "name": "clawcode-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Web UI + Ollama Cloud proxy for claw-code",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
