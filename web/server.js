@@ -68,6 +68,83 @@ async function proxyChat(req, res) {
   }
 }
 
+/* ------------------------------------------------------------------
+ * Shareable conversation snapshots — for NotebookLM "Web URL" sources.
+ * In-memory Map; data is lost on restart (fine for personal use).
+ * For persistence, mount a Railway volume and swap to fs-backed JSON.
+ * ------------------------------------------------------------------ */
+const shares = new Map();
+const SHARE_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+const SHARE_MAX = 500;
+
+function escHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+function pruneShares() {
+  const now = Date.now();
+  for (const [k, v] of shares) if (now - v.createdAt > SHARE_TTL_MS) shares.delete(k);
+  if (shares.size > SHARE_MAX) {
+    const oldest = [...shares.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
+    if (oldest) shares.delete(oldest[0]);
+  }
+}
+
+async function createShare(req, res) {
+  const body = await readBody(req);
+  let payload;
+  try { payload = JSON.parse(body); }
+  catch { res.writeHead(400, { 'content-type': 'application/json' }); res.end('{"error":"invalid json"}'); return; }
+  const { title, messages } = payload || {};
+  if (!Array.isArray(messages) || messages.length === 0) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'messages array required' }));
+    return;
+  }
+  const id = [...crypto.getRandomValues(new Uint8Array(9))]
+    .map(b => b.toString(36).padStart(2, '0')).join('').slice(0, 12);
+  shares.set(id, { title: String(title || 'claw-code conversation'), messages, createdAt: Date.now() });
+  pruneShares();
+  const proto = req.headers['x-forwarded-proto'] || 'http';
+  const host = req.headers['x-forwarded-host'] || req.headers.host;
+  const url = `${proto}://${host}/s/${id}`;
+  res.writeHead(200, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({ id, url }));
+}
+
+function renderShare(id, res) {
+  const share = shares.get(id);
+  if (!share) { res.writeHead(404, { 'content-type': 'text/plain' }); res.end('Share not found or expired.'); return; }
+  const date = new Date(share.createdAt).toISOString().slice(0, 19).replace('T', ' ');
+  const blocks = share.messages.map(m => {
+    const role = m.role === 'user' ? 'User' : m.role === 'assistant' ? 'Assistant' : 'System';
+    return `<section><h2>${escHtml(role)}</h2><div class="msg">${escHtml(m.content || '').replace(/\n/g, '<br>')}</div></section>`;
+  }).join('\n');
+  const html = `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<title>${escHtml(share.title)}</title>
+<meta name="description" content="claw-code conversation snapshot">
+<meta name="robots" content="noindex,nofollow">
+<style>
+  body { font: 16px/1.6 -apple-system, system-ui, sans-serif; max-width: 740px; margin: 2rem auto; padding: 0 1rem; color: #222; background: #fafaf7; }
+  h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+  h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em; color: #888; margin-top: 1.5rem; margin-bottom: 0.4rem; }
+  .meta { color: #888; font-size: 0.85rem; margin-bottom: 2rem; }
+  .msg { padding: 0.75rem 1rem; border-left: 3px solid #d4d4d0; background: #fff; }
+  section + section { margin-top: 0.5rem; }
+</style></head>
+<body>
+  <h1>${escHtml(share.title)}</h1>
+  <div class="meta">claw-code conversation · ${date} UTC</div>
+  ${blocks}
+</body></html>`;
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=300' });
+  res.end(html);
+}
+
 async function serveStatic(req, res) {
   const url = new URL(req.url, 'http://x');
   let pathname = url.pathname === '/' ? '/index.html' : url.pathname;
@@ -96,6 +173,16 @@ const server = createServer(async (req, res) => {
   }
   if (req.method === 'POST' && req.url.startsWith('/v1/chat/completions')) {
     await proxyChat(req, res);
+    return;
+  }
+  if (req.method === 'POST' && req.url === '/api/share') {
+    await createShare(req, res);
+    return;
+  }
+  if (req.method === 'GET' && req.url.startsWith('/s/')) {
+    const id = req.url.slice(3).split('?')[0].split('/')[0];
+    if (!/^[a-z0-9]{6,16}$/i.test(id)) { res.writeHead(404); res.end('not found'); return; }
+    renderShare(id, res);
     return;
   }
   if (req.method === 'GET' || req.method === 'HEAD') {

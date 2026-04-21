@@ -553,7 +553,14 @@
     activeSessionId: null,
     agents: [],
     skills: [],
-    integrations: { obsidianVault: '', dailyNotePath: '', notebookSource: '' },
+    integrations: {
+      obsidianVault: '',
+      dailyNotePath: '',
+      obsidianApiUrl: '',   // e.g. https://127.0.0.1:27124 (Local REST API plugin)
+      obsidianApiKey: '',   // bearer token from the plugin
+      notebookSource: '',
+      lastShareUrl: '',
+    },
     jobs: [],
     rightTab: 'agents',
     streaming: false,
@@ -997,7 +1004,10 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="#8b5cf6" aria-hidden="true"><path d="M12 2 L20 8 L18 20 L6 20 L4 8 Z" opacity="0.85"/></svg>
         <span class="font-display text-base tracking-tight" style="color: var(--fg);">Obsidian</span>
       </div>
-      <p class="text-[11.5px] mb-3 leading-relaxed" style="color: var(--fg-muted);">Vault-aware via the obsidian:// URI scheme. Works when Obsidian is installed locally.</p>
+      <p class="text-[11.5px] mb-3 leading-relaxed" style="color: var(--fg-muted);">
+        Two modes: <strong>URI scheme</strong> (no setup, opens Obsidian on this machine) or <strong>Local REST API</strong>
+        (install the <a href="https://github.com/coddingtonbear/obsidian-local-rest-api" target="_blank" rel="noopener" style="color: var(--accent);">plugin</a>, then append silently).
+      </p>
 
       <label class="block text-[10px] font-mono uppercase tracking-widest mb-1" style="color: var(--fg-dim);">Vault name</label>
       <input id="obsVault" class="w-full bg-transparent border px-2 py-1.5 mb-2 text-sm font-mono" style="border-color: var(--border-strong); color: var(--fg);" placeholder="e.g. notes" value="${escapeHtml(state.integrations.obsidianVault || '')}" />
@@ -1006,6 +1016,17 @@
 
       <label class="block text-[10px] font-mono uppercase tracking-widest mb-1" style="color: var(--fg-dim);">Append to note (path)</label>
       <input id="obsPath" class="w-full bg-transparent border px-2 py-1.5 mb-2 text-sm font-mono" style="border-color: var(--border-strong); color: var(--fg);" placeholder="Daily/2026-04-21.md" value="${escapeHtml(state.integrations.dailyNotePath || '')}" />
+
+      <details class="mb-2">
+        <summary class="text-[10px] font-mono uppercase tracking-widest cursor-pointer mb-2" style="color: var(--fg-dim);">Local REST API (optional, silent append)</summary>
+        <label class="block text-[10px] font-mono uppercase tracking-widest mb-1 mt-2" style="color: var(--fg-dim);">API URL</label>
+        <input id="obsApiUrl" class="w-full bg-transparent border px-2 py-1.5 mb-2 text-sm font-mono" style="border-color: var(--border-strong); color: var(--fg);" placeholder="https://127.0.0.1:27124" value="${escapeHtml(state.integrations.obsidianApiUrl || '')}" />
+        <label class="block text-[10px] font-mono uppercase tracking-widest mb-1" style="color: var(--fg-dim);">API key</label>
+        <input id="obsApiKey" type="password" class="w-full bg-transparent border px-2 py-1.5 mb-2 text-sm font-mono" style="border-color: var(--border-strong); color: var(--fg);" placeholder="bearer token from plugin" value="${escapeHtml(state.integrations.obsidianApiKey || '')}" />
+        <p class="text-[10.5px] mt-1 mb-2 font-mono leading-relaxed" style="color: var(--fg-dim);">
+          For HTTPS with self-signed cert, visit the URL once in this browser and accept the cert.
+        </p>
+      </details>
 
       <button id="obsAppend" class="cut-corner w-full px-3 py-2 text-sm font-medium border hover:bg-ember-500 hover:text-ink-900 hover:border-ember-500 transition-colors" style="border-color: var(--border-strong); color: var(--fg);">Append last reply</button>
     `;
@@ -1017,20 +1038,50 @@
     obs.querySelector('#obsPath').addEventListener('input', e => {
       state.integrations.dailyNotePath = e.target.value.trim(); persist();
     });
+    obs.querySelector('#obsApiUrl').addEventListener('input', e => {
+      state.integrations.obsidianApiUrl = e.target.value.trim().replace(/\/$/, ''); persist();
+    });
+    obs.querySelector('#obsApiKey').addEventListener('input', e => {
+      state.integrations.obsidianApiKey = e.target.value.trim(); persist();
+    });
     obs.querySelector('#obsOpen').addEventListener('click', () => {
       const v = state.integrations.obsidianVault;
       if (!v) return toast('Set a vault name first.');
       window.location.href = `obsidian://open?vault=${encodeURIComponent(v)}`;
       toast(`Opening Obsidian vault "${v}"…`);
     });
-    obs.querySelector('#obsAppend').addEventListener('click', () => {
-      const v = state.integrations.obsidianVault;
-      const p = state.integrations.dailyNotePath || `Inbox/claw-${new Date().toISOString().slice(0,10)}.md`;
-      if (!v) return toast('Set a vault name first.');
+    obs.querySelector('#obsAppend').addEventListener('click', async () => {
       const sess = activeSession();
       const last = [...sess.messages].reverse().find(m => m.role === 'assistant');
       if (!last) return toast('No assistant reply yet.');
-      const url = `obsidian://new?vault=${encodeURIComponent(v)}&file=${encodeURIComponent(p)}&content=${encodeURIComponent(last.content)}`;
+      const p = state.integrations.dailyNotePath || `Inbox/claw-${new Date().toISOString().slice(0,10)}.md`;
+      const apiUrl = state.integrations.obsidianApiUrl;
+      const apiKey = state.integrations.obsidianApiKey;
+      const stamp = new Date().toISOString();
+      const body = `\n\n---\n*claw-code · ${stamp}*\n\n${last.content}\n`;
+
+      // Prefer Local REST API when configured (silent, no app focus stolen)
+      if (apiUrl && apiKey) {
+        try {
+          const resp = await fetch(`${apiUrl}/vault/${p.split('/').map(encodeURIComponent).join('/')}`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${apiKey}`,
+              'Content-Type': 'text/markdown',
+            },
+            body,
+          });
+          if (resp.ok) { toast(`Appended to ${p}`); return; }
+          toast(`REST API failed (${resp.status}) — falling back to URI scheme`);
+        } catch (err) {
+          toast(`REST API unreachable — falling back to URI scheme`);
+        }
+      }
+
+      // Fallback: URI scheme
+      const v = state.integrations.obsidianVault;
+      if (!v) return toast('Set a vault name OR configure the REST API.');
+      const url = `obsidian://new?vault=${encodeURIComponent(v)}&file=${encodeURIComponent(p)}&content=${encodeURIComponent(body)}&append=true`;
       window.location.href = url;
       toast(`Sending to ${p}`);
     });
@@ -1045,23 +1096,60 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4285f4" stroke-width="2.5" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
         <span class="font-display text-base tracking-tight" style="color: var(--fg);">NotebookLM</span>
       </div>
-      <p class="text-[11.5px] mb-3 leading-relaxed" style="color: var(--fg-muted);">Send sources to NotebookLM. There's no public API yet, so this opens the web app — paste-ready.</p>
+      <p class="text-[11.5px] mb-3 leading-relaxed" style="color: var(--fg-muted);">
+        No public API exists. Workflow: <em>share this conversation as a public URL</em>, then add that URL as a "Web" source in NotebookLM.
+      </p>
 
-      <button id="nlmOpen" class="cut-corner w-full px-3 py-2 mb-3 text-sm font-medium bg-ember-500 hover:bg-ember-400 text-ink-900 transition-colors">Open NotebookLM</button>
+      <button id="nlmShare" class="cut-corner w-full px-3 py-2 mb-3 text-sm font-medium bg-ember-500 hover:bg-ember-400 text-ink-900 transition-colors">
+        Share conversation → open NotebookLM
+      </button>
 
-      <label class="block text-[10px] font-mono uppercase tracking-widest mb-1" style="color: var(--fg-dim);">Source URL</label>
+      <div id="nlmShareOut" class="${state.integrations.lastShareUrl ? '' : 'hidden'} mb-3">
+        <label class="block text-[10px] font-mono uppercase tracking-widest mb-1" style="color: var(--fg-dim);">Last share URL</label>
+        <div class="flex gap-1">
+          <input id="nlmShareUrl" readonly class="w-full bg-transparent border px-2 py-1.5 text-xs font-mono" style="border-color: var(--border-strong); color: var(--fg);" value="${escapeHtml(state.integrations.lastShareUrl || '')}" />
+          <button id="nlmShareCopy" class="px-2 text-xs border hover:bg-ember-500 hover:text-ink-900 hover:border-ember-500" style="border-color: var(--border-strong); color: var(--fg);" title="Copy">⎘</button>
+        </div>
+      </div>
+
+      <label class="block text-[10px] font-mono uppercase tracking-widest mb-1" style="color: var(--fg-dim);">Or paste any URL</label>
       <input id="nlmSrc" class="w-full bg-transparent border px-2 py-1.5 mb-2 text-sm font-mono" style="border-color: var(--border-strong); color: var(--fg);" placeholder="https://example.com/article" value="${escapeHtml(state.integrations.notebookSource || '')}" />
 
-      <button id="nlmSend" class="cut-corner w-full px-3 py-2 text-sm font-medium border hover:bg-ember-500 hover:text-ink-900 hover:border-ember-500 transition-colors" style="border-color: var(--border-strong); color: var(--fg);">Send to NotebookLM</button>
-      <p class="text-[10.5px] mt-2 font-mono" style="color: var(--fg-dim);">copies URL → opens notebooklm.google.com</p>
+      <button id="nlmSend" class="cut-corner w-full px-3 py-2 text-sm font-medium border hover:bg-ember-500 hover:text-ink-900 hover:border-ember-500 transition-colors" style="border-color: var(--border-strong); color: var(--fg);">Copy URL & open NotebookLM</button>
     `;
     cont.appendChild(nlm);
 
     nlm.querySelector('#nlmSrc').addEventListener('input', e => {
       state.integrations.notebookSource = e.target.value.trim(); persist();
     });
-    nlm.querySelector('#nlmOpen').addEventListener('click', () => {
-      window.open('https://notebooklm.google.com/', '_blank', 'noopener');
+    if (nlm.querySelector('#nlmShareCopy')) {
+      nlm.querySelector('#nlmShareCopy').addEventListener('click', () => {
+        navigator.clipboard.writeText(state.integrations.lastShareUrl).then(() => toast('Copied.'));
+      });
+    }
+    nlm.querySelector('#nlmShare').addEventListener('click', async () => {
+      const sess = activeSession();
+      if (!sess.messages.length) return toast('Empty conversation — chat first.');
+      try {
+        const resp = await fetch('/api/share', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            title: sess.title || 'claw-code conversation',
+            messages: sess.messages.map(m => ({ role: m.role, content: m.content })),
+          }),
+        });
+        if (!resp.ok) throw new Error(`server ${resp.status}`);
+        const { url } = await resp.json();
+        state.integrations.lastShareUrl = url;
+        persist();
+        await navigator.clipboard.writeText(url).catch(() => {});
+        window.open('https://notebooklm.google.com/', '_blank', 'noopener');
+        toast('Share URL copied — paste as a "Web" source in NotebookLM.');
+        renderRight();
+      } catch (err) {
+        toast(`Share failed: ${err.message}`);
+      }
     });
     nlm.querySelector('#nlmSend').addEventListener('click', () => {
       const u = state.integrations.notebookSource;

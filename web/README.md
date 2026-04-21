@@ -49,6 +49,27 @@ OLLAMA_URL=http://127.0.0.1:11434 npm start
 | `GET /` | serves `index.html` |
 | `GET /healthz` | Railway healthcheck |
 | `POST /v1/chat/completions` | proxied to `${OLLAMA_URL}/v1/chat/completions` with bearer auth |
+| `POST /api/share` | snapshot the current conversation, returns a public URL |
+| `GET /s/:id` | renders a shared conversation as plain HTML (NotebookLM-ingestible) |
+
+## Integrations
+
+### Obsidian
+
+Two modes — both live in the right-panel **Integrations** tab:
+
+- **URI scheme** (default, no setup): clicks fire `obsidian://new` URLs. Only works when you're browsing on the same machine where Obsidian is installed.
+- **Local REST API** (silent append, recommended): install the [Local REST API plugin](https://github.com/coddingtonbear/obsidian-local-rest-api), copy the API key from its settings, paste it into the integration card under "Local REST API" along with the URL (default `https://127.0.0.1:27124`). The browser POSTs directly to your local Obsidian — Railway is not in the path. For the self-signed HTTPS cert, visit the URL once in your browser and accept it.
+
+### NotebookLM
+
+NotebookLM has no public API. The "Share conversation → open NotebookLM" button:
+1. POSTs the current chat to `/api/share` on your Railway server
+2. Server stores it in memory and returns a public URL like `https://your-app.up.railway.app/s/abc123`
+3. Browser copies the URL, opens NotebookLM
+4. You paste the URL into NotebookLM as a **Web** source — NotebookLM fetches and ingests it
+
+Shares are in-memory (lost on restart) with a 30-day TTL and 500-share cap. For persistence, mount a Railway volume and swap the `Map` in `server.js` for fs-backed JSON.
 
 ## Models
 
