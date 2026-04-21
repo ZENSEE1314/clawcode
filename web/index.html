@@ -447,11 +447,12 @@
 
         <div class="ml-auto flex items-center gap-2">
           <select id="modelSelect" class="bg-transparent border px-3 py-1.5 text-sm font-mono cut-corner cursor-pointer" style="border-color: var(--border-strong); color: var(--fg);">
-            <option value="gemma3:27b-cloud">gemma3:27b-cloud</option>
-            <option value="gemma3:4b">gemma3:4b</option>
-            <option value="gemma3:12b">gemma3:12b</option>
-            <option value="qwen2.5-coder:7b">qwen2.5-coder:7b</option>
-            <option value="llama3.2">llama3.2</option>
+            <option value="gemma4:cloud">gemma4:cloud</option>
+            <option value="gpt-oss:120b-cloud">gpt-oss:120b-cloud</option>
+            <option value="gpt-oss:20b-cloud">gpt-oss:20b-cloud</option>
+            <option value="qwen3-coder:480b-cloud">qwen3-coder:480b-cloud</option>
+            <option value="kimi-k2.5:cloud">kimi-k2.5:cloud</option>
+            <option value="deepseek-v3.2:cloud">deepseek-v3.2:cloud</option>
           </select>
 
           <button id="cmdPaletteBtn" class="px-2 py-1.5 text-xs font-mono border hover:bg-ink-700 transition-colors flex items-center gap-2" style="border-color: var(--border-strong); color: var(--fg-muted);" title="Command palette">
@@ -542,7 +543,7 @@
     theme:       'clawcode.theme.v1',
     activeSession:'clawcode.activeSession.v1',
   };
-  const DEFAULT_MODEL = 'gemma3:27b-cloud';
+  const DEFAULT_MODEL = 'gemma4:cloud';
   // Same-origin proxy when served over http(s); fall back to local Ollama when opened as file://
   const OLLAMA_URL = (location.protocol === 'http:' || location.protocol === 'https:')
     ? '/v1/chat/completions'
@@ -581,7 +582,7 @@
         'then execute the first step and ask for confirmation before destructive actions.',
         'Be terse, concrete, and bias toward shipping working output over discussion.',
       ].join(' '),
-      model: 'gemma3:27b-cloud',
+      model: 'gemma4:cloud',
       active: true,
     }];
   }
@@ -597,7 +598,7 @@
   function seedJobs() {
     return [
       { id: uid(), name: 'index obsidian vault',     status: 'running', startedAt: Date.now() - 12000, progress: 64 },
-      { id: uid(), name: 'pull gemma3:27b-cloud',    status: 'done',    startedAt: Date.now() - 240000, finishedAt: Date.now() - 90000, progress: 100 },
+      { id: uid(), name: 'pull gemma4:cloud',         status: 'done',    startedAt: Date.now() - 240000, finishedAt: Date.now() - 90000, progress: 100 },
       { id: uid(), name: 'extract pdfs → notebooklm', status: 'queued',  progress: 0 },
       { id: uid(), name: 'embed repo for code-search',status: 'failed', startedAt: Date.now() - 600000, finishedAt: Date.now() - 580000, progress: 28, error: 'OOM at chunk 412' },
     ];
@@ -1379,7 +1380,7 @@
             <div>
               <label class="block text-[10px] font-mono uppercase tracking-widest mb-1" style="color: var(--fg-dim);">Default model</label>
               <select id="m_model" class="w-full bg-transparent border px-2 py-1.5 text-sm font-mono" style="border-color: var(--border-strong); color: var(--fg);">
-                ${['gemma3:27b-cloud','gemma3:4b','gemma3:12b','qwen2.5-coder:7b','llama3.2'].map(m => `<option ${m===a.model?'selected':''}>${m}</option>`).join('')}
+                ${['gemma4:cloud','gpt-oss:120b-cloud','gpt-oss:20b-cloud','qwen3-coder:480b-cloud','kimi-k2.5:cloud','deepseek-v3.2:cloud'].map(m => `<option ${m===a.model?'selected':''}>${m}</option>`).join('')}
               </select>
             </div>
             <div>
