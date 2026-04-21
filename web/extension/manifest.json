@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "claw browser bridge",
+  "version": "0.1.0",
+  "description": "Bridges the claw-code web chat to your local browser. Lets the chat click, type, screenshot, and navigate on your active tab.",
+  "permissions": ["activeTab", "scripting", "tabs", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "claw bridge",
+    "default_popup": "popup.html"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}

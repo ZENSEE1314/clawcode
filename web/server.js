@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { join, extname, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { WebSocketServer } from 'ws';
 
 const PORT = Number(process.env.PORT) || 3000;
 const OLLAMA_URL = process.env.OLLAMA_URL || 'https://ollama.com';
@@ -282,9 +283,116 @@ const server = createServer(async (req, res) => {
   res.writeHead(405); res.end('method not allowed');
 });
 
+/* ------------------------------------------------------------------
+ * Browser bridge — pairing relay between the Chrome extension and the
+ * web chat. Two roles connect to /ws with the same `token` query param:
+ *   role=extension  → installed Chrome extension on the user's machine
+ *   role=client     → the chat UI in their browser
+ * The relay forwards JSON messages between the two halves. Tokens are
+ * generated client-side and only ever live in memory here. */
+const pairs = new Map(); // token -> { extension: ws|null, clients: Set<ws> }
+
+function getOrCreatePair(token) {
+  let pair = pairs.get(token);
+  if (!pair) {
+    pair = { extension: null, clients: new Set() };
+    pairs.set(token, pair);
+  }
+  return pair;
+}
+
+function broadcastBridgeStatus(token) {
+  const pair = pairs.get(token);
+  if (!pair) return;
+  const state = pair.extension && pair.extension.readyState === 1 ? 'connected' : 'disconnected';
+  const msg = JSON.stringify({ type: 'bridge_status', state });
+  for (const client of pair.clients) {
+    if (client.readyState === 1) client.send(msg);
+  }
+}
+
+const wss = new WebSocketServer({ noServer: true });
+wss.on('connection', (ws, req, ctx) => {
+  const { role, token } = ctx;
+  const pair = getOrCreatePair(token);
+
+  if (role === 'extension') {
+    if (pair.extension && pair.extension.readyState === 1) {
+      try { pair.extension.close(1008, 'replaced'); } catch { /* noop */ }
+    }
+    pair.extension = ws;
+    broadcastBridgeStatus(token);
+  } else {
+    pair.clients.add(ws);
+    ws.send(JSON.stringify({
+      type: 'bridge_status',
+      state: pair.extension && pair.extension.readyState === 1 ? 'connected' : 'disconnected',
+    }));
+  }
+
+  ws.on('message', (data) => {
+    let msg;
+    try { msg = JSON.parse(data.toString()); } catch { return; }
+    if (role === 'client' && msg.type === 'command') {
+      // forward to extension
+      if (pair.extension && pair.extension.readyState === 1) {
+        pair.extension.send(JSON.stringify(msg));
+      } else {
+        ws.send(JSON.stringify({ type: 'result', id: msg.id, ok: false, error: 'extension not connected' }));
+      }
+    } else if (role === 'extension' && msg.type === 'result') {
+      // forward result to all clients (they filter by id)
+      for (const client of pair.clients) {
+        if (client.readyState === 1) client.send(JSON.stringify(msg));
+      }
+    }
+  });
+
+  ws.on('close', () => {
+    if (role === 'extension') {
+      if (pair.extension === ws) pair.extension = null;
+      broadcastBridgeStatus(token);
+    } else {
+      pair.clients.delete(ws);
+    }
+    if (!pair.extension && pair.clients.size === 0) pairs.delete(token);
+  });
+});
+
+server.on('upgrade', (req, socket, head) => {
+  if (!req.url || !req.url.startsWith('/ws')) {
+    socket.destroy();
+    return;
+  }
+  // Basic auth applies to the WS handshake too when enabled.
+  if (AUTH_ENABLED) {
+    const got = req.headers.authorization || '';
+    if (got !== EXPECTED_AUTH) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm="claw"\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+  }
+  const url = new URL(req.url, 'http://x');
+  const role = url.searchParams.get('role');
+  const token = url.searchParams.get('token');
+  if (role !== 'extension' && role !== 'client') {
+    socket.destroy();
+    return;
+  }
+  if (!token || token.length < 8 || token.length > 128) {
+    socket.destroy();
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit('connection', ws, req, { role, token });
+  });
+});
+
 server.listen(PORT, () => {
   console.log(`claw-code web listening on :${PORT}`);
   console.log(`upstream ollama: ${OLLAMA_URL}`);
   console.log(`api key: ${OLLAMA_API_KEY ? 'set' : 'MISSING — set OLLAMA_API_KEY'}`);
   console.log(`basic auth: ${AUTH_ENABLED ? `ENABLED (user=${BASIC_AUTH_USER})` : 'disabled'}`);
+  console.log(`bridge relay: ws(s)://<host>/ws?role=...&token=...`);
 });

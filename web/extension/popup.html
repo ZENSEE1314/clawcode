@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>claw bridge</title>
+<style>
+  body { width: 320px; margin: 0; padding: 14px 16px; font: 13px/1.4 -apple-system, system-ui, sans-serif; background: #0d0c0a; color: #f5f1e8; }
+  h1 { font-size: 14px; margin: 0 0 10px; letter-spacing: 0.04em; text-transform: uppercase; color: #ec8a25; }
+  label { display: block; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.1em; color: #8a8576; margin: 10px 0 4px; font-family: ui-monospace, "JetBrains Mono", monospace; }
+  input { width: 100%; box-sizing: border-box; background: transparent; border: 1px solid #3a352b; color: #f5f1e8; padding: 6px 8px; font-family: ui-monospace, monospace; font-size: 12px; }
+  input:focus { outline: none; border-color: #ec8a25; }
+  .row { display: flex; gap: 6px; align-items: center; margin-top: 12px; }
+  button { background: #ec8a25; color: #0d0c0a; border: none; padding: 7px 14px; font-weight: 600; font-size: 12px; cursor: pointer; }
+  button:hover { background: #f29b3f; }
+  button.ghost { background: transparent; border: 1px solid #3a352b; color: #f5f1e8; }
+  .status { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid #3a352b; background: #181612; margin-bottom: 4px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+  .dot.connected { background: #6ace87; box-shadow: 0 0 6px #6ace87aa; }
+  .dot.connecting { background: #ec8a25; animation: pulse 1.2s ease-in-out infinite; }
+  .dot.disconnected, .dot.idle { background: #6b6557; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .help { font-size: 11px; color: #8a8576; line-height: 1.45; margin-top: 10px; }
+  code { background: #181612; padding: 1px 5px; font-size: 11px; }
+</style>
+</head>
+<body>
+  <h1>claw bridge</h1>
+  <div class="status">
+    <span id="dot" class="dot idle"></span>
+    <span id="statusText">idle</span>
+  </div>
+  <label for="relay">Relay URL</label>
+  <input id="relay" type="text" placeholder="wss://clawcode-production.up.railway.app/ws" />
+  <label for="token">Pairing token</label>
+  <input id="token" type="text" placeholder="paste from web app → Browser tab" />
+  <div class="row">
+    <button id="save">Save & connect</button>
+    <button id="reconnect" class="ghost">Reconnect</button>
+  </div>
+  <p class="help">
+    Open the web app, go to the <strong>Console → Browser</strong> tab, copy the pairing token, paste it here, hit <strong>Save</strong>.
+    Once connected the chat can drive your active tab.
+  </p>
+  <script src="popup.js"></script>
+</body>
+</html>

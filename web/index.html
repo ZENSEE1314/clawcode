@@ -520,6 +520,7 @@
       <div class="px-5 flex border-b" style="border-color: var(--border);">
         <div class="tab active" data-tab="agents">Agents</div>
         <div class="tab" data-tab="skills">Skills</div>
+        <div class="tab" data-tab="browser">Browser</div>
         <div class="tab" data-tab="integrations">Integrations</div>
       </div>
 
@@ -900,6 +901,7 @@
 
     if (state.rightTab === 'agents')        renderAgentsTab(cont);
     if (state.rightTab === 'skills')        renderSkillsTab(cont);
+    if (state.rightTab === 'browser')       renderBrowserTab(cont);
     if (state.rightTab === 'integrations')  renderIntegrationsTab(cont);
   }
 
@@ -1165,6 +1167,172 @@
   }
 
   /* ============================================================
+     BROWSER BRIDGE — WS to Chrome extension via /ws relay
+     ============================================================ */
+  const bridge = {
+    ws: null,
+    state: 'disconnected',
+    pending: new Map(), // id -> {resolve, reject, timer}
+    listeners: new Set(),
+  };
+
+  function bridgeToken() {
+    let t = localStorage.getItem('clawcode.bridgeToken.v1');
+    if (!t) {
+      t = 'tok_' + [...crypto.getRandomValues(new Uint8Array(12))]
+        .map(b => b.toString(36).padStart(2, '0')).join('').slice(0, 20);
+      localStorage.setItem('clawcode.bridgeToken.v1', t);
+    }
+    return t;
+  }
+
+  function bridgeUrl() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${location.host}/ws?role=client&token=${encodeURIComponent(bridgeToken())}`;
+  }
+
+  function bridgeConnect() {
+    if (bridge.ws && (bridge.ws.readyState === 0 || bridge.ws.readyState === 1)) return;
+    try { bridge.ws = new WebSocket(bridgeUrl()); }
+    catch { setTimeout(bridgeConnect, 3000); return; }
+    bridge.ws.addEventListener('open', () => {
+      bridge.state = 'pending';
+      bridge.listeners.forEach(fn => fn());
+    });
+    bridge.ws.addEventListener('message', (ev) => {
+      let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type === 'bridge_status') {
+        bridge.state = msg.state;
+        bridge.listeners.forEach(fn => fn());
+      } else if (msg.type === 'result' && msg.id && bridge.pending.has(msg.id)) {
+        const p = bridge.pending.get(msg.id);
+        clearTimeout(p.timer);
+        bridge.pending.delete(msg.id);
+        p.resolve(msg);
+      }
+    });
+    bridge.ws.addEventListener('close', () => {
+      bridge.state = 'disconnected';
+      bridge.listeners.forEach(fn => fn());
+      setTimeout(bridgeConnect, 3000);
+    });
+  }
+
+  function bridgeCommand(action, params = {}, timeoutMs = 30000) {
+    return new Promise((resolveP, rejectP) => {
+      if (!bridge.ws || bridge.ws.readyState !== 1) return rejectP(new Error('relay not connected'));
+      if (bridge.state !== 'connected') return rejectP(new Error('extension not connected — open the claw bridge popup and paste your token'));
+      const id = 'cmd_' + Math.random().toString(36).slice(2, 10);
+      const timer = setTimeout(() => {
+        bridge.pending.delete(id);
+        rejectP(new Error('command timed out'));
+      }, timeoutMs);
+      bridge.pending.set(id, { resolve: resolveP, reject: rejectP, timer });
+      bridge.ws.send(JSON.stringify({ type: 'command', id, action, params }));
+    });
+  }
+
+  function renderBrowserTab(cont) {
+    const token = bridgeToken();
+    const card = document.createElement('div');
+    card.className = 'p-3 border';
+    card.style.borderColor = 'var(--border)';
+    card.style.background = 'var(--bg-elev-2)';
+    const stateColor = bridge.state === 'connected' ? '#6ace87' : bridge.state === 'pending' ? '#ec8a25' : '#6b6557';
+    card.innerHTML = `
+      <div class="flex items-center gap-2 mb-2">
+        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${stateColor};"></span>
+        <span class="font-display text-base tracking-tight" style="color: var(--fg);">Browser bridge</span>
+      </div>
+      <p class="text-[11.5px] mb-3 leading-relaxed" style="color: var(--fg-muted);">
+        Bridge status: <strong style="color: var(--fg);">${bridge.state}</strong>.
+        Once paired, the chat can click, type, screenshot, and navigate on your active Chrome tab by emitting <code>&lt;action&gt;...&lt;/action&gt;</code> blocks.
+      </p>
+      <label class="block text-[10px] font-mono uppercase tracking-widest mb-1" style="color: var(--fg-dim);">Pairing token</label>
+      <div class="flex gap-1 mb-3">
+        <input id="bridgeToken" readonly class="w-full bg-transparent border px-2 py-1.5 text-xs font-mono" style="border-color: var(--border-strong); color: var(--fg);" value="${token}" />
+        <button id="bridgeCopy" class="px-2 text-xs border hover:bg-ember-500 hover:text-ink-900 hover:border-ember-500" style="border-color: var(--border-strong); color: var(--fg);" title="Copy">⎘</button>
+      </div>
+      <details class="mb-3">
+        <summary class="text-[11px] cursor-pointer" style="color: var(--fg-muted);">How to install the extension</summary>
+        <ol class="text-[11px] mt-2 leading-relaxed pl-5" style="color: var(--fg-muted); list-style: decimal;">
+          <li>Download the extension folder: <a href="https://github.com/ZENSEE1314/clawcode/tree/web-ui/web/extension" target="_blank" style="color: var(--accent);">github.com/ZENSEE1314/clawcode/web/extension</a></li>
+          <li>In Chrome, open <code>chrome://extensions</code> → toggle <strong>Developer mode</strong> on (top-right)</li>
+          <li>Click <strong>Load unpacked</strong> → select the <code>extension</code> folder</li>
+          <li>Click the new "claw bridge" extension icon in your toolbar</li>
+          <li>Paste this pairing token, hit <strong>Save & connect</strong></li>
+        </ol>
+      </details>
+      <label class="block text-[10px] font-mono uppercase tracking-widest mb-1" style="color: var(--fg-dim);">Quick test</label>
+      <div class="flex gap-1 flex-wrap mb-2">
+        <button data-cmd="screenshot" class="bridge-test px-2 py-1 text-[11px] font-mono border hover:bg-ember-500 hover:text-ink-900 hover:border-ember-500" style="border-color: var(--border-strong); color: var(--fg);">screenshot</button>
+        <button data-cmd="read_page" class="bridge-test px-2 py-1 text-[11px] font-mono border hover:bg-ember-500 hover:text-ink-900 hover:border-ember-500" style="border-color: var(--border-strong); color: var(--fg);">read_page</button>
+        <button data-cmd="scroll-down" class="bridge-test px-2 py-1 text-[11px] font-mono border hover:bg-ember-500 hover:text-ink-900 hover:border-ember-500" style="border-color: var(--border-strong); color: var(--fg);">scroll ↓</button>
+      </div>
+      <pre id="bridgeOut" class="text-[10.5px] font-mono p-2 border whitespace-pre-wrap break-all" style="border-color: var(--border-strong); color: var(--fg-muted); background: var(--bg); min-height: 60px; max-height: 200px; overflow:auto;"></pre>
+    `;
+    cont.appendChild(card);
+    card.querySelector('#bridgeCopy').addEventListener('click', () => {
+      navigator.clipboard.writeText(token).then(() => toast('Token copied.'));
+    });
+    const out = card.querySelector('#bridgeOut');
+    card.querySelectorAll('.bridge-test').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        out.textContent = `→ ${btn.dataset.cmd}…`;
+        try {
+          let r;
+          if (btn.dataset.cmd === 'scroll-down') r = await bridgeCommand('scroll', { direction: 'down', amount: 3 });
+          else r = await bridgeCommand(btn.dataset.cmd);
+          if (r.data?.dataUrl) {
+            out.innerHTML = `<img src="${r.data.dataUrl}" style="max-width:100%; border:1px solid var(--border);" />`;
+          } else {
+            out.textContent = JSON.stringify(r, null, 2).slice(0, 800);
+          }
+        } catch (err) {
+          out.textContent = `ERROR: ${err.message}`;
+        }
+      });
+    });
+    bridge.listeners.add(() => {
+      if (state.rightTab === 'browser') renderRight();
+    });
+  }
+
+  /* Action loop — scans assistant messages for <action>{...}</action> blocks
+   * and dispatches each one through the bridge. Result is fed back to the
+   * model as a follow-up user turn so multi-step plans can complete. */
+  const ACTION_RE = /<action>\s*(\{[\s\S]*?\})\s*<\/action>/g;
+
+  function bridgeSystemPrompt() {
+    return `\n\nBROWSER BRIDGE: when the user wants you to operate their browser, emit one or more action blocks like:\n<action>{"action":"navigate","params":{"url":"https://example.com"}}</action>\n<action>{"action":"click","params":{"selector":"button.submit"}}</action>\n<action>{"action":"type","params":{"text":"hello"}}</action>\n<action>{"action":"screenshot"}</action>\n<action>{"action":"read_page"}</action>\n<action>{"action":"find","params":{"query":"search box"}}</action>\n<action>{"action":"scroll","params":{"direction":"down","amount":3}}</action>\nAfter each block, wait — results will be fed back as a user message before continuing. Do not invent results; only emit the next step when you have observed the previous one.`;
+  }
+
+  async function runBridgeActions(assistantContent) {
+    const matches = [...assistantContent.matchAll(ACTION_RE)];
+    if (!matches.length) return null;
+    const results = [];
+    for (const m of matches) {
+      let parsed;
+      try { parsed = JSON.parse(m[1]); }
+      catch (err) { results.push({ error: `invalid JSON in action block: ${err.message}` }); continue; }
+      if (!parsed.action) { results.push({ error: 'action block missing "action" field' }); continue; }
+      try {
+        const r = await bridgeCommand(parsed.action, parsed.params || {});
+        // Skip the screenshot blob in the feedback to keep tokens reasonable
+        const sanitized = r.data?.dataUrl
+          ? { ...r, data: { ...r.data, dataUrl: '[screenshot captured, ' + Math.round(r.data.dataUrl.length / 1024) + 'kb]' } }
+          : r;
+        results.push(sanitized);
+      } catch (err) {
+        results.push({ ok: false, error: err.message });
+      }
+    }
+    return results;
+  }
+
+  bridgeConnect();
+
+  /* ============================================================
      SESSION OPS
      ============================================================ */
   function switchSession(id) {
@@ -1306,6 +1474,52 @@
       }
       assistantMsg.streaming = false;
       renderMessages();
+
+      // Browser bridge — execute any <action>...</action> blocks the model emitted.
+      // Loop up to 5 turns so multi-step plans complete without manual re-prompting.
+      let loopGuard = 5;
+      let lastContent = assistantMsg.content;
+      while (loopGuard-- > 0 && bridge.state === 'connected') {
+        const results = await runBridgeActions(lastContent);
+        if (!results || results.length === 0) break;
+        const feedback = `BRIDGE RESULTS:\n` + results.map((r, i) => `[${i + 1}] ${JSON.stringify(r).slice(0, 600)}`).join('\n');
+        sess.messages.push({ role: 'user', content: feedback, bridgeFeedback: true });
+        const followAssistant = { role: 'assistant', content: '', streaming: true, model: sess.model };
+        sess.messages.push(followAssistant);
+        renderMessages();
+        const followMessages = buildPayloadMessages(sess);
+        const followResp = await fetch(OLLAMA_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ollama' },
+          body: JSON.stringify({ model: sess.model, messages: followMessages, stream: true }),
+          signal: state.abortCtrl?.signal,
+        });
+        if (!followResp.ok) { followAssistant.error = `HTTP ${followResp.status}`; followAssistant.streaming = false; renderMessages(); break; }
+        const reader2 = followResp.body.getReader();
+        const dec2 = new TextDecoder();
+        let buf2 = '';
+        while (true) {
+          const { value, done } = await reader2.read();
+          if (done) break;
+          buf2 += dec2.decode(value, { stream: true });
+          let nl;
+          while ((nl = buf2.indexOf('\n')) >= 0) {
+            const line = buf2.slice(0, nl).trim();
+            buf2 = buf2.slice(nl + 1);
+            if (!line.startsWith('data:')) continue;
+            const payload = line.slice(5).trim();
+            if (payload === '[DONE]') break;
+            try {
+              const obj = JSON.parse(payload);
+              const delta = obj.choices?.[0]?.delta?.content || '';
+              if (delta) { followAssistant.content += delta; renderMessages(); }
+            } catch { /* ignore */ }
+          }
+        }
+        followAssistant.streaming = false;
+        renderMessages();
+        lastContent = followAssistant.content;
+      }
     } catch (err) {
       assistantMsg.streaming = false;
       const msg = err.name === 'AbortError'
@@ -1339,6 +1553,9 @@
     if (enabledSkills.length) {
       const skillNote = `\n\nActive skills available to you (UI scaffolding — invoke conceptually): ${enabledSkills.map(s => s.name).join(', ')}.`;
       sys = (sys || 'You are a helpful local assistant.') + skillNote;
+    }
+    if (bridge.state === 'connected') {
+      sys = (sys || 'You are a helpful local assistant.') + bridgeSystemPrompt();
     }
     if (sys) out.push({ role: 'system', content: sys });
     sess.messages
