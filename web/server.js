@@ -1,12 +1,14 @@
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
-import { join, extname, normalize, sep } from 'node:path';
+import { join, extname, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const PORT = Number(process.env.PORT) || 3000;
 const OLLAMA_URL = process.env.OLLAMA_URL || 'https://ollama.com';
 const OLLAMA_API_KEY = process.env.OLLAMA_API_KEY || '';
-const STATIC_ROOT = fileURLToPath(new URL('.', import.meta.url));
+// resolve() strips any trailing slash that fileURLToPath leaves on Linux,
+// so STATIC_ROOT + sep below produces a single boundary separator.
+const STATIC_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
