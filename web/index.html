@@ -431,13 +431,13 @@
         <div class="ml-auto flex items-center gap-2">
           <input id="modelSelect" list="modelList" class="bg-transparent border px-3 py-1.5 text-sm font-mono cut-corner" style="border-color: var(--border-strong); color: var(--fg); width: 220px;" placeholder="model" />
           <datalist id="modelList">
-            <option value="gemma4:31b-cloud"></option>
-            <option value="gemma4:26b"></option>
             <option value="gpt-oss:120b-cloud"></option>
             <option value="gpt-oss:20b-cloud"></option>
             <option value="qwen3-coder:480b-cloud"></option>
             <option value="kimi-k2.5:cloud"></option>
             <option value="deepseek-v3.2:cloud"></option>
+            <option value="gemma4:31b-cloud"></option>
+            <option value="gemma4:26b"></option>
           </datalist>
 
           <button id="cmdPaletteBtn" class="px-2 py-1.5 text-xs font-mono border hover:bg-ink-700 transition-colors flex items-center gap-2" style="border-color: var(--border-strong); color: var(--fg-muted);" title="Command palette">
@@ -529,7 +529,7 @@
     theme:       'clawcode.theme.v1',
     activeSession:'clawcode.activeSession.v1',
   };
-  const DEFAULT_MODEL = 'gemma4:31b-cloud';
+  const DEFAULT_MODEL = 'gpt-oss:120b-cloud';
   // Same-origin proxy when served over http(s); fall back to local Ollama when opened as file://
   const OLLAMA_URL = (location.protocol === 'http:' || location.protocol === 'https:')
     ? '/v1/chat/completions'
@@ -558,19 +558,41 @@
 
   /* ---------- Seeds ---------- */
   function seedAgents() {
-    return [{
-      id: uid(),
-      name: 'Hermes',
-      description: 'Fast multi-step planning agent. Decomposes goals, drafts a plan, then executes.',
-      systemPrompt: [
-        'You are Hermes, a fast multi-step planning agent operating inside the claw-code CLI.',
-        'When given a goal, first restate it in one sentence, then produce a numbered plan of 3-7 atomic steps,',
-        'then execute the first step and ask for confirmation before destructive actions.',
-        'Be terse, concrete, and bias toward shipping working output over discussion.',
-      ].join(' '),
-      model: 'gemma4:31b-cloud',
-      active: true,
-    }];
+    return [
+      {
+        id: uid(),
+        name: 'Brain',
+        description: 'Multi-step autonomous agent tuned for gpt-oss:120b. Plans, executes browser actions via the bridge, and reasons over results.',
+        systemPrompt: [
+          'You are Brain, an autonomous agent. The user gives you goals; you decompose, execute, and report.',
+          'OPERATING LOOP:',
+          '1. Restate the goal in one sentence.',
+          '2. Produce a short numbered plan (3-6 steps) — keep each step atomic and observable.',
+          '3. Execute step 1 using the tools available (see BROWSER BRIDGE section if connected).',
+          '4. After every action, briefly state what you observed and which step is next.',
+          '5. Stop and ask the user before any destructive or irreversible action (deletion, payment, posting publicly).',
+          '',
+          'STYLE: terse, concrete, ship working output over discussion. No filler. No "Sure!" / "Of course!".',
+          'When you do not know something or a tool fails, say so and propose an alternative.',
+          'Never invent tool results — only describe what the bridge actually returned.',
+        ].join('\n'),
+        model: 'gpt-oss:120b-cloud',
+        active: true,
+      },
+      {
+        id: uid(),
+        name: 'Hermes',
+        description: 'Fast planning-first assistant. Good for breaking down problems before doing.',
+        systemPrompt: [
+          'You are Hermes, a fast planning-first assistant.',
+          'When given a goal, first restate it in one sentence, then produce a numbered plan of 3-7 atomic steps,',
+          'then execute the first step and ask for confirmation before destructive actions.',
+          'Be terse, concrete, and bias toward shipping working output over discussion.',
+        ].join(' '),
+        model: 'gpt-oss:120b-cloud',
+        active: false,
+      },
+    ];
   }
   function seedSkills() {
     return [
