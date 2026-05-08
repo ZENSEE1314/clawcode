@@ -101,7 +101,7 @@ let confirmQueue = Promise.resolve();
 // Each entry covers all "mutating" commands in that category. Read-only
 // commands (read_file, list_dir, registry_read, service_list/_status) are
 // unaffected; they always run without prompts. Defaults: all OFF.
-const autoApprove = { shell: false, fs: false, registry: false, services: false, playwright: false };
+const autoApprove = { shell: false, fs: false, registry: false, services: false, playwright: false, gbrain: false };
 
 pw.setDefaults({ headless: !!args['playwright-headless'] });
 
@@ -420,6 +420,126 @@ async function registryWrite(path, name, value, type = 'String') {
   return { ok: true };
 }
 
+/* ----------------------- gbrain (semantic memory) ---------------- *
+ * Wraps the gbrain CLI from https://github.com/garrytan/gbrain — runs
+ * locally on the user's machine, persists pages + embeddings in PGLite.
+ * Helper shells out to `gbrain <subcommand>` so we don't need to track
+ * the HTTP shape. Install once with: bun install -g gbrain (or clone +
+ * bun link) and run `gbrain init` before first use.
+ */
+
+function shellQuote(s) {
+  return `'${String(s).replace(/'/g, "''")}'`;
+}
+
+function gbrainCli(psCommand, opts = {}) {
+  return new Promise((resolveP) => {
+    const ps = spawn('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-Command', psCommand,
+    ], { cwd: opts.cwd || process.cwd(), windowsHide: true });
+    let stdout = '', stderr = '';
+    ps.stdout.on('data', d => stdout += d.toString());
+    ps.stderr.on('data', d => stderr += d.toString());
+    const timer = setTimeout(() => { try { ps.kill(); } catch { /* noop */ } }, opts.timeout || 60_000);
+    ps.on('close', code => {
+      clearTimeout(timer);
+      const out = { exitCode: code, stdout: stdout.slice(0, 16_000), stderr: stderr.slice(0, 4_000) };
+      if (code !== 0 && /not recognized|command not found/i.test(stderr)) {
+        out.hint = 'gbrain CLI not on PATH. Install: clone https://github.com/garrytan/gbrain, then: bun install && bun link, then: gbrain init';
+      }
+      resolveP(out);
+    });
+  });
+}
+
+async function gbrainSearch(query) {
+  requireAllow('gbrain');
+  if (!query) throw new Error('query required');
+  const out = await gbrainCli(`gbrain search ${shellQuote(query)}`);
+  return { ok: out.exitCode === 0, data: out };
+}
+
+async function gbrainQuery(question) {
+  requireAllow('gbrain');
+  if (!question) throw new Error('question required');
+  const out = await gbrainCli(`gbrain query ${shellQuote(question)}`, { timeout: 120_000 });
+  return { ok: out.exitCode === 0, data: out };
+}
+
+async function gbrainGet(slug) {
+  requireAllow('gbrain');
+  if (!slug) throw new Error('slug required');
+  const out = await gbrainCli(`gbrain get ${shellQuote(slug)}`);
+  return { ok: out.exitCode === 0, data: out };
+}
+
+async function gbrainList({ type, tag } = {}) {
+  requireAllow('gbrain');
+  let cmd = 'gbrain list';
+  if (type) cmd += ` --type ${shellQuote(type)}`;
+  if (tag)  cmd += ` --tag ${shellQuote(tag)}`;
+  const out = await gbrainCli(cmd);
+  return { ok: out.exitCode === 0, data: out };
+}
+
+async function gbrainPut(slug, content) {
+  requireAllow('gbrain');
+  if (!slug || typeof content !== 'string') throw new Error('slug and content required');
+  if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new Error(`content > ${MAX_FILE_BYTES} bytes`);
+  const ok = await confirmAction('gbrain', 'gbrain put (write page)', {
+    slug, bytes: Buffer.byteLength(content, 'utf8'), preview: content.slice(0, 200),
+  });
+  if (!ok) return { ok: false, error: 'denied by user' };
+  const tmp = join(tmpdir(), `gbrain-${randomBytes(4).toString('hex')}.md`);
+  writeFileSync(tmp, content, 'utf8');
+  try {
+    const out = await gbrainCli(`Get-Content ${shellQuote(tmp)} -Raw | gbrain put ${shellQuote(slug)}`);
+    return { ok: out.exitCode === 0, data: out };
+  } finally {
+    try { unlinkSync(tmp); } catch { /* noop */ }
+  }
+}
+
+async function gbrainDelete(slug) {
+  requireAllow('gbrain');
+  if (!slug) throw new Error('slug required');
+  const ok = await confirmAction('gbrain', 'gbrain DELETE page', { slug });
+  if (!ok) return { ok: false, error: 'denied by user' };
+  const out = await gbrainCli(`gbrain delete ${shellQuote(slug)}`);
+  return { ok: out.exitCode === 0, data: out };
+}
+
+async function gbrainBacklinks(slug) {
+  requireAllow('gbrain');
+  if (!slug) throw new Error('slug required');
+  const out = await gbrainCli(`gbrain backlinks ${shellQuote(slug)}`);
+  return { ok: out.exitCode === 0, data: out };
+}
+
+async function gbrainGraphQuery(slug, { depth, direction, type } = {}) {
+  requireAllow('gbrain');
+  if (!slug) throw new Error('slug required');
+  let cmd = `gbrain graph-query ${shellQuote(slug)}`;
+  if (depth)     cmd += ` --depth ${Number(depth) | 0}`;
+  if (direction) cmd += ` --direction ${shellQuote(direction)}`;
+  if (type)      cmd += ` --type ${shellQuote(type)}`;
+  const out = await gbrainCli(cmd);
+  return { ok: out.exitCode === 0, data: out };
+}
+
+async function gbrainStats() {
+  requireAllow('gbrain');
+  const out = await gbrainCli('gbrain stats');
+  return { ok: out.exitCode === 0, data: out };
+}
+
+async function gbrainDoctor() {
+  requireAllow('gbrain');
+  const out = await gbrainCli('gbrain doctor --json --fast');
+  return { ok: out.exitCode === 0, data: out };
+}
+
 /* ----------------------- services -------------------------------- */
 
 async function serviceList(filter = '') {
@@ -486,6 +606,18 @@ async function executeCommand(msg) {
       case 'service_start':      return await serviceControl('start', params.name);
       case 'service_stop':       return await serviceControl('stop', params.name);
       case 'service_restart':    return await serviceControl('restart', params.name);
+
+      // gbrain — needs --allow=gbrain
+      case 'gbrain_search':      return await gbrainSearch(params.query);
+      case 'gbrain_query':       return await gbrainQuery(params.question || params.q);
+      case 'gbrain_get':         return await gbrainGet(params.slug);
+      case 'gbrain_list':        return await gbrainList(params);
+      case 'gbrain_put':         return await gbrainPut(params.slug, params.content);
+      case 'gbrain_delete':      return await gbrainDelete(params.slug);
+      case 'gbrain_backlinks':   return await gbrainBacklinks(params.slug);
+      case 'gbrain_graph_query': return await gbrainGraphQuery(params.slug, params);
+      case 'gbrain_stats':       return await gbrainStats();
+      case 'gbrain_doctor':      return await gbrainDoctor();
 
       // playwright — needs --allow=playwright
       case 'playwright_navigate':      requireAllow('playwright'); return { ok: true, data: await pw.pwNavigate(params) };

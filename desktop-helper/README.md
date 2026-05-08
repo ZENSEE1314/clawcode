@@ -29,6 +29,36 @@ PowerShell window. You see exactly what the model wants to do.
 | Registry | `--allow=registry` | `registry_read` | `registry_write` |
 | Services | `--allow=services` | `service_list`, `service_status` | `service_start`, `service_stop`, `service_restart` |
 | Playwright | `--allow=playwright` | `playwright_navigate/click/fill/press/get_text/get_attribute/wait_for/screenshot/list_pages/close_page` | `playwright_eval` (arbitrary JS in page) |
+| gbrain | `--allow=gbrain` | `gbrain_search/query/get/list/backlinks/graph_query/stats/doctor` | `gbrain_put`, `gbrain_delete` |
+
+### gbrain (the AI's persistent semantic memory)
+
+[gbrain](https://github.com/garrytan/gbrain) gives the AI a real local memory:
+hybrid vector + keyword + graph search over markdown pages. Much better than
+the in-app Memory tab for anything you want to recall over weeks/months.
+
+**One-time install (Windows, PowerShell):**
+
+```powershell
+# 1. Install Bun if you don't have it
+irm bun.sh/install.ps1 | iex
+
+# 2. Clone gbrain and link the CLI
+git clone https://github.com/garrytan/gbrain.git
+cd gbrain
+bun install
+bun link
+
+# 3. Initialize the local DB (PGLite, embedded — no Postgres install needed)
+gbrain init
+
+# 4. (Optional) ingest a folder of notes to seed it
+gbrain import C:\Users\<you>\notes
+```
+
+After install, restart the helper with `--allow=gbrain` and the AI can
+query/save pages. The chat's system prompt automatically teaches the model
+the toolset when this category is enabled.
 
 ### Playwright (the AI's own browser)
 

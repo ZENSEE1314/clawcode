@@ -1553,7 +1553,7 @@
     localStorage.setItem('clawcode.autoApprove.v1', JSON.stringify(values));
   }
   bridge.autoApprove = Object.assign(
-    { shell: false, fs: false, registry: false, services: false, playwright: false },
+    { shell: false, fs: false, registry: false, services: false, playwright: false, gbrain: false },
     loadAutoApprove(),
   );
 
@@ -1675,7 +1675,7 @@
       </details>
       <label class="block text-[10px] font-mono uppercase tracking-widest mb-2" style="color: var(--fg-dim);">Auto-approve (skip y/N prompts)</label>
       <div class="grid grid-cols-2 gap-1.5 mb-2">
-        ${['shell', 'fs', 'registry', 'services', 'playwright'].map(cat => `
+        ${['shell', 'fs', 'registry', 'services', 'playwright', 'gbrain'].map(cat => `
           <label class="flex items-center gap-2 p-1.5 border cursor-pointer text-[11.5px]" style="border-color: var(--border-strong); color: var(--fg);">
             <input type="checkbox" data-aa="${cat}" ${bridge.autoApprove[cat] ? 'checked' : ''} class="aa-toggle" />
             <span class="font-mono">${cat}</span>
@@ -1683,7 +1683,7 @@
         `).join('')}
       </div>
       <button id="aaAll" class="w-full mb-3 px-2 py-1 text-[11px] font-mono border hover:bg-rust-500 hover:text-ink-900 hover:border-rust-500" style="border-color: var(--border-strong); color: var(--fg);">
-        ${['shell','fs','registry','services','playwright'].every(c => bridge.autoApprove[c]) ? 'CLEAR all auto-approve' : 'YOLO — auto-approve everything'}
+        ${['shell','fs','registry','services','playwright','gbrain'].every(c => bridge.autoApprove[c]) ? 'CLEAR all auto-approve' : 'YOLO — auto-approve everything'}
       </button>
       <p class="text-[10px] font-mono mb-3" style="color: var(--fg-dim);">
         category must also be enabled with <code>--allow=&lt;cat&gt;</code> when starting the helper.
@@ -1713,7 +1713,7 @@
     card.querySelector('#aaAll').addEventListener('click', () => {
       const allOn = ['shell','fs','registry','services'].every(c => bridge.autoApprove[c]);
       const next = !allOn;
-      ['shell','fs','registry','services','playwright'].forEach(c => bridge.autoApprove[c] = next);
+      ['shell','fs','registry','services','playwright','gbrain'].forEach(c => bridge.autoApprove[c] = next);
       saveAutoApprove(bridge.autoApprove);
       sendAutoApprove();
       renderRight();
@@ -1801,7 +1801,19 @@
         + '    playwright_eval          {code, pageId?}                      // confirmation\n'
         + '    playwright_list_pages    {}\n'
         + '    playwright_close_page    {pageId}\n'
-        + '  Use Playwright when you need to scrape, fill forms, or run automation WITHOUT taking over the user\'s real Chrome. The first call lazy-launches Chromium; subsequent calls reuse it. Returned pageId persists — pass it back to keep working in the same tab.'
+        + '  Use Playwright when you need to scrape, fill forms, or run automation WITHOUT taking over the user\'s real Chrome. The first call lazy-launches Chromium; subsequent calls reuse it. Returned pageId persists — pass it back to keep working in the same tab.\n'
+        + '\n  gbrain — semantic memory (--allow=gbrain) — query and save pages in the user\'s local gbrain DB:\n'
+        + '    gbrain_search       {query}                            // hybrid vector + keyword search across all pages\n'
+        + '    gbrain_query        {question}                         // RAG-style answer using stored knowledge\n'
+        + '    gbrain_get          {slug}                             // fetch one page by slug\n'
+        + '    gbrain_list         {type?, tag?}                      // enumerate pages\n'
+        + '    gbrain_put          {slug, content}                    // create/update a page (markdown), confirms\n'
+        + '    gbrain_delete       {slug}                             // confirms\n'
+        + '    gbrain_backlinks    {slug}                             // pages that link to this slug\n'
+        + '    gbrain_graph_query  {slug, depth?, direction?, type?}  // traverse the knowledge graph\n'
+        + '    gbrain_stats        {}\n'
+        + '    gbrain_doctor       {}                                 // health check\n'
+        + '  Use gbrain INSTEAD of the in-app Memory tab when the user has it installed — it persists across devices/restarts and supports semantic recall. On any non-trivial question, gbrain_query first to fetch relevant context. After important decisions or facts surface, gbrain_put with a descriptive slug like "decisions/2026-04-22-railway-region".'
         + '\nFor desktop work, ALWAYS take a screenshot first. Coordinates are in physical pixels.\n'
         + 'If you get "category not enabled", tell the user to restart the helper with --allow=<category>.\n'
         + 'If you get "denied by user", DO NOT retry the same action — pivot or stop and ask.';
