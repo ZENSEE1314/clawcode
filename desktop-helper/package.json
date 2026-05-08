@@ -11,6 +11,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "playwright": "^1.49.0",
     "ws": "^8.20.0"
   }
 }

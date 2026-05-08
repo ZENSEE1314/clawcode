@@ -27,6 +27,7 @@
 
 import { WebSocket } from 'ws';
 import { spawn } from 'node:child_process';
+import * as pw from './playwright-runner.js';
 import {
   readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync,
   readdirSync, statSync,
@@ -100,7 +101,9 @@ let confirmQueue = Promise.resolve();
 // Each entry covers all "mutating" commands in that category. Read-only
 // commands (read_file, list_dir, registry_read, service_list/_status) are
 // unaffected; they always run without prompts. Defaults: all OFF.
-const autoApprove = { shell: false, fs: false, registry: false, services: false };
+const autoApprove = { shell: false, fs: false, registry: false, services: false, playwright: false };
+
+pw.setDefaults({ headless: !!args['playwright-headless'] });
 
 function setAutoApprove(values) {
   if (!values || typeof values !== 'object') return;
@@ -484,6 +487,24 @@ async function executeCommand(msg) {
       case 'service_stop':       return await serviceControl('stop', params.name);
       case 'service_restart':    return await serviceControl('restart', params.name);
 
+      // playwright — needs --allow=playwright
+      case 'playwright_navigate':      requireAllow('playwright'); return { ok: true, data: await pw.pwNavigate(params) };
+      case 'playwright_click':         requireAllow('playwright'); return { ok: true, data: await pw.pwClick(params) };
+      case 'playwright_fill':          requireAllow('playwright'); return { ok: true, data: await pw.pwFill(params) };
+      case 'playwright_press':         requireAllow('playwright'); return { ok: true, data: await pw.pwPress(params) };
+      case 'playwright_get_text':      requireAllow('playwright'); return { ok: true, data: await pw.pwGetText(params) };
+      case 'playwright_get_attribute': requireAllow('playwright'); return { ok: true, data: await pw.pwGetAttribute(params) };
+      case 'playwright_wait_for':      requireAllow('playwright'); return { ok: true, data: await pw.pwWaitFor(params) };
+      case 'playwright_screenshot':    requireAllow('playwright'); return { ok: true, data: await pw.pwScreenshot(params) };
+      case 'playwright_list_pages':    requireAllow('playwright'); return { ok: true, data: await pw.pwListPages() };
+      case 'playwright_close_page':    requireAllow('playwright'); return { ok: true, data: await pw.pwClosePage(params) };
+      case 'playwright_eval': {
+        requireAllow('playwright');
+        const ok = await confirmAction('playwright', 'playwright_eval (arbitrary JS in page)', { code: params.code });
+        if (!ok) return { ok: false, error: 'denied by user' };
+        return { ok: true, data: await pw.pwEval(params) };
+      }
+
       default: return { ok: false, error: `unknown desktop action: ${action}` };
     }
   } catch (err) {
@@ -542,9 +563,10 @@ function scheduleReconnect() {
 
 connect();
 
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   console.log('\nshutting down.');
   try { socket?.close(); } catch { /* noop */ }
+  try { await pw.pwShutdown(); } catch { /* noop */ }
   rl.close();
   process.exit(0);
 });

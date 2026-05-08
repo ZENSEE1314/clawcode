@@ -28,6 +28,23 @@ PowerShell window. You see exactly what the model wants to do.
 | Filesystem | `--allow=fs` | `read_file`, `list_dir` | `write_file`, `delete_file` |
 | Registry | `--allow=registry` | `registry_read` | `registry_write` |
 | Services | `--allow=services` | `service_list`, `service_status` | `service_start`, `service_stop`, `service_restart` |
+| Playwright | `--allow=playwright` | `playwright_navigate/click/fill/press/get_text/get_attribute/wait_for/screenshot/list_pages/close_page` | `playwright_eval` (arbitrary JS in page) |
+
+### Playwright (the AI's own browser)
+
+Separate Chromium instance launched inside the helper process — does NOT
+share cookies, sessions, or auth with your real Chrome. Useful for scraping,
+form-filling, and automation tasks where you don't want the AI taking over
+your main browser.
+
+After `npm install`, run **once**:
+
+```powershell
+npx playwright install chromium
+```
+
+This downloads the Chromium binary (~300 MB). Pass `--playwright-headless`
+when starting the helper if you don't want the browser window to pop up.
 
 Examples:
 
@@ -66,6 +83,9 @@ same Railway WebSocket relay using the same token as the extension.
 ```powershell
 cd C:\Users\<you>\claw-code\desktop-helper
 npm install
+
+# Only if you want Playwright (the AI's own browser):
+npx playwright install chromium
 ```
 
 ## Run

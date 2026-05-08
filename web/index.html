@@ -1357,7 +1357,7 @@
     localStorage.setItem('clawcode.autoApprove.v1', JSON.stringify(values));
   }
   bridge.autoApprove = Object.assign(
-    { shell: false, fs: false, registry: false, services: false },
+    { shell: false, fs: false, registry: false, services: false, playwright: false },
     loadAutoApprove(),
   );
 
@@ -1479,7 +1479,7 @@
       </details>
       <label class="block text-[10px] font-mono uppercase tracking-widest mb-2" style="color: var(--fg-dim);">Auto-approve (skip y/N prompts)</label>
       <div class="grid grid-cols-2 gap-1.5 mb-2">
-        ${['shell', 'fs', 'registry', 'services'].map(cat => `
+        ${['shell', 'fs', 'registry', 'services', 'playwright'].map(cat => `
           <label class="flex items-center gap-2 p-1.5 border cursor-pointer text-[11.5px]" style="border-color: var(--border-strong); color: var(--fg);">
             <input type="checkbox" data-aa="${cat}" ${bridge.autoApprove[cat] ? 'checked' : ''} class="aa-toggle" />
             <span class="font-mono">${cat}</span>
@@ -1487,7 +1487,7 @@
         `).join('')}
       </div>
       <button id="aaAll" class="w-full mb-3 px-2 py-1 text-[11px] font-mono border hover:bg-rust-500 hover:text-ink-900 hover:border-rust-500" style="border-color: var(--border-strong); color: var(--fg);">
-        ${['shell','fs','registry','services'].every(c => bridge.autoApprove[c]) ? 'CLEAR all auto-approve' : 'YOLO — auto-approve everything'}
+        ${['shell','fs','registry','services','playwright'].every(c => bridge.autoApprove[c]) ? 'CLEAR all auto-approve' : 'YOLO — auto-approve everything'}
       </button>
       <p class="text-[10px] font-mono mb-3" style="color: var(--fg-dim);">
         category must also be enabled with <code>--allow=&lt;cat&gt;</code> when starting the helper.
@@ -1517,7 +1517,7 @@
     card.querySelector('#aaAll').addEventListener('click', () => {
       const allOn = ['shell','fs','registry','services'].every(c => bridge.autoApprove[c]);
       const next = !allOn;
-      ['shell','fs','registry','services'].forEach(c => bridge.autoApprove[c] = next);
+      ['shell','fs','registry','services','playwright'].forEach(c => bridge.autoApprove[c] = next);
       saveAutoApprove(bridge.autoApprove);
       sendAutoApprove();
       renderRight();
@@ -1593,6 +1593,19 @@
         + '    service_start      {name}                        // confirmation\n'
         + '    service_stop       {name}                        // confirmation\n'
         + '    service_restart    {name}                        // confirmation\n'
+        + '\n  Playwright browser (--allow=playwright) — your OWN browser, separate from the user\'s Chrome:\n'
+        + '    playwright_navigate      {url, pageId?}\n'
+        + '    playwright_click         {selector, pageId?}\n'
+        + '    playwright_fill          {selector, text, pageId?}\n'
+        + '    playwright_press         {key, selector?, pageId?}            // e.g. "Enter"\n'
+        + '    playwright_get_text      {selector?, pageId?}                 // omit selector for whole body\n'
+        + '    playwright_get_attribute {selector, name, pageId?}\n'
+        + '    playwright_wait_for      {selector, timeout?, pageId?}\n'
+        + '    playwright_screenshot    {fullPage?, pageId?}                 // returns dataUrl\n'
+        + '    playwright_eval          {code, pageId?}                      // confirmation\n'
+        + '    playwright_list_pages    {}\n'
+        + '    playwright_close_page    {pageId}\n'
+        + '  Use Playwright when you need to scrape, fill forms, or run automation WITHOUT taking over the user\'s real Chrome. The first call lazy-launches Chromium; subsequent calls reuse it. Returned pageId persists — pass it back to keep working in the same tab.'
         + '\nFor desktop work, ALWAYS take a screenshot first. Coordinates are in physical pixels.\n'
         + 'If you get "category not enabled", tell the user to restart the helper with --allow=<category>.\n'
         + 'If you get "denied by user", DO NOT retry the same action — pivot or stop and ask.';
