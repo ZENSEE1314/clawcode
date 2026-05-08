@@ -468,17 +468,22 @@
       <div id="messages" class="scroll relative z-10 flex-1 overflow-y-auto px-6 md:px-12 py-8"></div>
 
       <!-- Input area -->
-      <div class="relative z-10 border-t px-4 md:px-12 pt-3 pb-4" style="border-color: var(--border); background: rgba(20,18,16,0.55); backdrop-filter: blur(8px);">
+      <div id="composeRegion" class="relative z-10 border-t px-4 md:px-12 pt-3 pb-4" style="border-color: var(--border); background: rgba(20,18,16,0.55); backdrop-filter: blur(8px);">
 
         <!-- Active agent + skills chips -->
         <div id="activeChips" class="flex flex-wrap gap-2 mb-2"></div>
 
-        <div class="flex gap-2 items-end border" style="border-color: var(--border-strong); background: var(--bg-elev-2);">
-          <button id="attachBtn" title="Attach (coming soon)" class="p-3 hover:bg-ink-700 transition-colors shrink-0" style="color: var(--fg-dim);" aria-label="Attach file">
+        <!-- Pending attachment chips -->
+        <div id="pendingAttachments" class="flex flex-wrap gap-2 mb-2"></div>
+
+        <input type="file" id="fileInput" multiple class="hidden" />
+
+        <div id="composeBox" class="flex gap-2 items-end border transition-colors" style="border-color: var(--border-strong); background: var(--bg-elev-2);">
+          <button id="attachBtn" title="Attach files (or drop them here)" class="p-3 hover:bg-ink-700 transition-colors shrink-0" style="color: var(--fg-dim);" aria-label="Attach file">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.4 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.49"/></svg>
           </button>
 
-          <textarea id="prompt" rows="1" placeholder="Ask claw something. Cmd/Ctrl+Enter to send." class="flex-1 bg-transparent border-0 outline-none resize-none py-3 px-1 text-sm font-body leading-relaxed scroll" style="color: var(--fg); max-height: 200px;" aria-label="Chat input"></textarea>
+          <textarea id="prompt" rows="1" placeholder="Ask claw something. Cmd/Ctrl+Enter to send. Drop files anywhere." class="flex-1 bg-transparent border-0 outline-none resize-none py-3 px-1 text-sm font-body leading-relaxed scroll" style="color: var(--fg); max-height: 200px;" aria-label="Chat input"></textarea>
 
           <div class="flex items-center gap-3 px-3 pb-2 shrink-0">
             <span id="tokenCount" class="text-[10px] font-mono" style="color: var(--fg-dim);">~0 tok</span>
@@ -819,6 +824,111 @@
     }
   }
 
+  /* ============================================================
+     ATTACHMENTS — file uploads (images, text, binary)
+     ============================================================ */
+  // Pending attachments awaiting the next send. Cleared on send.
+  state.pendingAttachments = [];
+
+  const TEXT_FILE_RE = /\.(md|markdown|txt|json|jsonl|js|mjs|cjs|ts|tsx|jsx|html|htm|css|scss|less|csv|tsv|xml|svg|yaml|yml|toml|ini|env|py|rb|rs|go|java|kt|c|cc|cpp|h|hpp|cs|php|sh|bash|zsh|ps1|sql|log|conf|cfg|gitignore|dockerfile)$/i;
+  const MAX_TEXT_BYTES = 200_000;       // 200 KB per text file inlined into the prompt
+  const MAX_IMAGE_BYTES = 8_000_000;    // 8 MB per image (data URL is ~4/3 of file size)
+  const MAX_TOTAL_PENDING = 20_000_000; // 20 MB total across all pending attachments
+
+  function fileToDataUrl(file) {
+    return new Promise((resolveP, rejectP) => {
+      const r = new FileReader();
+      r.onload  = () => resolveP(r.result);
+      r.onerror = () => rejectP(r.error);
+      r.readAsDataURL(file);
+    });
+  }
+
+  async function loadAttachment(file) {
+    const isImage = file.type.startsWith('image/');
+    const isText  = file.type.startsWith('text/') || TEXT_FILE_RE.test(file.name);
+    if (isImage) {
+      if (file.size > MAX_IMAGE_BYTES) throw new Error(`image > ${(MAX_IMAGE_BYTES / 1024 / 1024).toFixed(0)} MB`);
+      const dataUrl = await fileToDataUrl(file);
+      return { kind: 'image', name: file.name, mime: file.type || 'image/png', dataUrl, size: file.size };
+    }
+    if (isText) {
+      const text = await (file.size > MAX_TEXT_BYTES
+        ? file.slice(0, MAX_TEXT_BYTES).text().then(t => t + `\n\n[…file truncated at ${MAX_TEXT_BYTES} bytes; original size ${file.size}]`)
+        : file.text());
+      return { kind: 'text', name: file.name, mime: file.type || 'text/plain', text, size: file.size };
+    }
+    return { kind: 'binary', name: file.name, mime: file.type || 'application/octet-stream', size: file.size };
+  }
+
+  async function addFiles(fileList) {
+    let total = state.pendingAttachments.reduce((n, a) => n + (a.size || 0), 0);
+    for (const file of fileList) {
+      total += file.size;
+      if (total > MAX_TOTAL_PENDING) {
+        toast(`Total > ${(MAX_TOTAL_PENDING / 1024 / 1024).toFixed(0)} MB; remaining files skipped.`);
+        break;
+      }
+      try {
+        const att = await loadAttachment(file);
+        state.pendingAttachments.push(att);
+      } catch (err) {
+        toast(`${file.name}: ${err.message}`);
+      }
+    }
+    renderPendingAttachments();
+  }
+
+  function removePendingAttachment(idx) {
+    state.pendingAttachments.splice(idx, 1);
+    renderPendingAttachments();
+  }
+
+  function renderPendingAttachments() {
+    const cont = document.getElementById('pendingAttachments');
+    if (!cont) return;
+    if (!state.pendingAttachments.length) { cont.innerHTML = ''; return; }
+    cont.innerHTML = state.pendingAttachments.map((a, i) => {
+      const sz = a.size > 1024 * 1024 ? `${(a.size / 1024 / 1024).toFixed(1)} MB` : `${(a.size / 1024).toFixed(0)} kb`;
+      const icon = a.kind === 'image' ? '🖼' : a.kind === 'text' ? '📄' : '📎';
+      return `
+        <div class="flex items-center gap-2 px-2 py-1 border text-[11px] font-mono" style="border-color: var(--border-strong); background: var(--bg-elev-1); color: var(--fg);">
+          ${a.kind === 'image' ? `<img src="${a.dataUrl}" style="width: 24px; height: 24px; object-fit: cover;" alt="" />` : `<span>${icon}</span>`}
+          <span class="truncate" style="max-width: 180px;" title="${escapeHtml(a.name)}">${escapeHtml(a.name)}</span>
+          <span style="color: var(--fg-dim);">${sz}</span>
+          <button data-rm="${i}" class="hover:text-ember-500" style="color: var(--fg-dim);" aria-label="Remove">×</button>
+        </div>
+      `;
+    }).join('');
+    cont.querySelectorAll('[data-rm]').forEach(b => {
+      b.addEventListener('click', () => removePendingAttachment(Number(b.dataset.rm)));
+    });
+  }
+
+  // Build the OpenAI-format content for a user message. Text files are
+  // inlined into the text portion (so non-vision models still see them).
+  // Images go in image_url parts (vision models see them; non-vision
+  // models will either ignore or 4xx — we surface the error inline).
+  function buildUserContent(msg) {
+    const atts = msg.attachments || [];
+    const images = atts.filter(a => a.kind === 'image');
+    const texts  = atts.filter(a => a.kind === 'text');
+    const bins   = atts.filter(a => a.kind === 'binary');
+
+    let textPart = msg.content || '';
+    for (const t of texts) {
+      textPart += `\n\n--- Attached file: ${t.name} (${t.size} bytes) ---\n${t.text}\n--- end of ${t.name} ---`;
+    }
+    for (const b of bins) {
+      textPart += `\n\n[Attached binary file: ${b.name} (${b.size} bytes, ${b.mime}) — content not readable as text]`;
+    }
+    if (images.length === 0) return textPart;
+    return [
+      { type: 'text', text: textPart },
+      ...images.map(img => ({ type: 'image_url', image_url: { url: img.dataUrl } })),
+    ];
+  }
+
   /* Cheap streaming-only update: rewrite the textContent of the currently
    * streaming bubble in place. Avoids the full renderMessages() cost
    * (which reflows every message and re-parses markdown on each token). */
@@ -894,6 +1004,31 @@
         });
       }
       inner.appendChild(head);
+    }
+
+    // Render attachments above the text body for user messages.
+    if (m.role === 'user' && m.attachments?.length) {
+      const wrap2 = document.createElement('div');
+      wrap2.className = 'flex flex-wrap gap-2 mb-2';
+      for (const a of m.attachments) {
+        if (a.kind === 'image' && a.dataUrl) {
+          const img = document.createElement('img');
+          img.src = a.dataUrl;
+          img.alt = a.name;
+          img.style.cssText = 'max-width: 240px; max-height: 240px; border: 1px solid var(--border-strong); cursor: zoom-in; object-fit: cover;';
+          img.addEventListener('click', () => window.open(a.dataUrl, '_blank'));
+          wrap2.appendChild(img);
+        } else {
+          const chip = document.createElement('div');
+          chip.className = 'flex items-center gap-2 px-2 py-1 border text-[11px] font-mono';
+          chip.style.cssText = 'border-color: var(--border-strong); background: var(--bg-elev-1); color: var(--fg);';
+          const icon = a.kind === 'text' ? '📄' : '📎';
+          const sz = a.size > 1024 * 1024 ? `${(a.size / 1024 / 1024).toFixed(1)} MB` : `${(a.size / 1024).toFixed(0)} kb`;
+          chip.innerHTML = `<span>${icon}</span><span>${escapeHtml(a.name)}</span><span style="color: var(--fg-dim);">${sz}</span>`;
+          wrap2.appendChild(chip);
+        }
+      }
+      inner.appendChild(wrap2);
     }
 
     const body = document.createElement('div');
@@ -1720,7 +1855,13 @@
       document.getElementById('sessionTitle').value = sess.title;
     }
 
-    sess.messages.push({ role: 'user', content: text });
+    const userMsg = { role: 'user', content: text };
+    if (state.pendingAttachments.length) {
+      userMsg.attachments = state.pendingAttachments;
+      state.pendingAttachments = [];
+      renderPendingAttachments();
+    }
+    sess.messages.push(userMsg);
     promptEl.value = '';
     autoresize();
     updateTokenCount();
@@ -1870,8 +2011,14 @@
     if (memPrompt) sys = (sys || 'You are a helpful local assistant.') + memPrompt;
     if (sys) out.push({ role: 'system', content: sys });
     sess.messages
-      .filter(m => !m.error && m.content)
-      .forEach(m => out.push({ role: m.role, content: m.content }));
+      .filter(m => !m.error && (m.content || (m.attachments && m.attachments.length)))
+      .forEach(m => {
+        if (m.role === 'user' && m.attachments?.length) {
+          out.push({ role: 'user', content: buildUserContent(m) });
+        } else {
+          out.push({ role: m.role, content: m.content });
+        }
+      });
     return out;
   }
 
@@ -2029,8 +2176,46 @@
     document.getElementById('settingsBtn').addEventListener('click', () => {
       toast('Settings live in the right panel for now.');
     });
-    document.getElementById('attachBtn').addEventListener('click', () => {
-      toast('Attachments — coming soon.');
+    const fileInput = document.getElementById('fileInput');
+    document.getElementById('attachBtn').addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', async (e) => {
+      if (e.target.files?.length) await addFiles([...e.target.files]);
+      e.target.value = '';
+    });
+
+    // Drag & drop anywhere in the chat surface
+    const dropZone = document.body;
+    let dragDepth = 0;
+    dropZone.addEventListener('dragenter', (e) => {
+      if (!e.dataTransfer?.types?.includes('Files')) return;
+      e.preventDefault();
+      dragDepth++;
+      document.getElementById('composeBox')?.style.setProperty('border-color', 'var(--accent)');
+    });
+    dropZone.addEventListener('dragover', (e) => {
+      if (e.dataTransfer?.types?.includes('Files')) e.preventDefault();
+    });
+    dropZone.addEventListener('dragleave', () => {
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) document.getElementById('composeBox')?.style.setProperty('border-color', 'var(--border-strong)');
+    });
+    dropZone.addEventListener('drop', async (e) => {
+      if (!e.dataTransfer?.files?.length) return;
+      e.preventDefault();
+      dragDepth = 0;
+      document.getElementById('composeBox')?.style.setProperty('border-color', 'var(--border-strong)');
+      await addFiles([...e.dataTransfer.files]);
+    });
+
+    // Paste image from clipboard
+    document.addEventListener('paste', async (e) => {
+      const items = [...(e.clipboardData?.items || [])].filter(i => i.kind === 'file');
+      if (!items.length) return;
+      const files = items.map(i => i.getAsFile()).filter(Boolean);
+      if (files.length) {
+        e.preventDefault();
+        await addFiles(files);
+      }
     });
 
     // Tabs.
