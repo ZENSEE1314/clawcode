@@ -345,13 +345,13 @@ wss.on('connection', (ws, req, ctx) => {
   ws.on('message', (data) => {
     let msg;
     try { msg = JSON.parse(data.toString()); } catch { return; }
-    if (role === 'client' && msg.type === 'command') {
+    if (role === 'client' && (msg.type === 'command' || msg.type === 'control')) {
       // Route by target: 'desktop' → desktop helper, anything else → extension.
       const target = msg.target === 'desktop' ? 'desktop' : 'extension';
       const executor = pair[target];
       if (executor && executor.readyState === 1) {
         executor.send(JSON.stringify(msg));
-      } else {
+      } else if (msg.type === 'command') {
         ws.send(JSON.stringify({ type: 'result', id: msg.id, ok: false, error: `${target} not connected` }));
       }
     } else if ((role === 'extension' || role === 'desktop') && msg.type === 'result') {

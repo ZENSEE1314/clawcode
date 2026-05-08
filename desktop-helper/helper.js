@@ -96,8 +96,30 @@ if (yolo && allow.size) {
 const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
 let confirmQueue = Promise.resolve();
 
-function confirmAction(label, details) {
+// Runtime auto-approve flags — togglable from the web UI via control msg.
+// Each entry covers all "mutating" commands in that category. Read-only
+// commands (read_file, list_dir, registry_read, service_list/_status) are
+// unaffected; they always run without prompts. Defaults: all OFF.
+const autoApprove = { shell: false, fs: false, registry: false, services: false };
+
+function setAutoApprove(values) {
+  if (!values || typeof values !== 'object') return;
+  let changed = [];
+  for (const k of Object.keys(autoApprove)) {
+    if (typeof values[k] === 'boolean' && values[k] !== autoApprove[k]) {
+      autoApprove[k] = values[k];
+      changed.push(`${k}=${values[k] ? 'ON' : 'off'}`);
+    }
+  }
+  if (changed.length) console.log(`⚙ auto-approve updated: ${changed.join(', ')}`);
+}
+
+function confirmAction(category, label, details) {
   if (yolo) return Promise.resolve(true);
+  if (autoApprove[category]) {
+    console.log(`✓ auto-approved (${category}): ${label}`);
+    return Promise.resolve(true);
+  }
   // Serialise prompts so multiple commands queue up cleanly.
   confirmQueue = confirmQueue.then(() => new Promise(resolveP => {
     console.log('\n──────── confirm ────────');
@@ -106,6 +128,7 @@ function confirmAction(label, details) {
       const shown = String(v).length > 200 ? String(v).slice(0, 200) + '…' : v;
       console.log(`  ${k.padEnd(8)}: ${shown}`);
     }
+    console.log(`  (auto-approve ${category} from web UI to skip these)`);
     let timer = setTimeout(() => {
       console.log('  → timed out, denied.');
       resolveP(false);
@@ -277,7 +300,7 @@ async function shellExec(command, opts = {}) {
   requireAllow('shell');
   if (typeof command !== 'string' || !command.trim()) throw new Error('command required');
   const cwd = opts.cwd && typeof opts.cwd === 'string' ? opts.cwd : process.cwd();
-  const ok = await confirmAction('shell command', { command, cwd });
+  const ok = await confirmAction('shell', 'shell command', { command, cwd });
   if (!ok) return { ok: false, error: 'denied by user' };
   const timeout = Math.min(opts.timeout || DEFAULT_SHELL_TIMEOUT_MS, 5 * 60_000);
   // Run via PowerShell so the model can use any PS or native command.
@@ -322,7 +345,7 @@ async function writeFile(path, content, append = false) {
   if (typeof content !== 'string') throw new Error('content must be a string');
   if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new Error(`content > ${MAX_FILE_BYTES} bytes`);
   const exists = existsSync(p);
-  const ok = await confirmAction(append ? 'append to file' : (exists ? 'OVERWRITE existing file' : 'create file'), {
+  const ok = await confirmAction('fs', append ? 'append to file' : (exists ? 'OVERWRITE existing file' : 'create file'), {
     path: p,
     bytes: Buffer.byteLength(content, 'utf8'),
     preview: content.slice(0, 200),
@@ -340,7 +363,7 @@ async function deleteFile(path) {
   if (!existsSync(p)) return { ok: false, error: 'not found' };
   const st = statSync(p);
   if (!st.isFile()) throw new Error('not a file (delete_dir not supported — use shell rm if needed)');
-  const ok = await confirmAction('DELETE file', { path: p, bytes: st.size });
+  const ok = await confirmAction('fs', 'DELETE file', { path: p, bytes: st.size });
   if (!ok) return { ok: false, error: 'denied by user' };
   unlinkSync(p);
   return { ok: true };
@@ -384,7 +407,7 @@ async function registryWrite(path, name, value, type = 'String') {
   if (typeof name !== 'string' || !name) throw new Error('name required');
   const allowedTypes = ['String', 'ExpandString', 'DWord', 'QWord', 'Binary', 'MultiString'];
   if (!allowedTypes.includes(type)) throw new Error(`type must be one of ${allowedTypes.join(', ')}`);
-  const ok = await confirmAction('REGISTRY write', { path, name, value: String(value), type });
+  const ok = await confirmAction('registry', 'REGISTRY write', { path, name, value: String(value), type });
   if (!ok) return { ok: false, error: 'denied by user' };
   const valArg = type === 'DWord' || type === 'QWord' ? Number(value) : `'${String(value).replace(/'/g, "''")}'`;
   await runPowerShell(`
@@ -419,7 +442,7 @@ async function serviceControl(action, name) {
   if (typeof name !== 'string' || !name) throw new Error('service name required');
   const verb = { start: 'Start', stop: 'Stop', restart: 'Restart' }[action];
   if (!verb) throw new Error('action must be start|stop|restart');
-  const ok = await confirmAction(`SERVICE ${verb.toUpperCase()}`, { name });
+  const ok = await confirmAction('services', `SERVICE ${verb.toUpperCase()}`, { name });
   if (!ok) return { ok: false, error: 'denied by user' };
   await runPowerShell(`${verb}-Service -Name '${name.replace(/'/g, "''")}' -Force`);
   return { ok: true };
@@ -487,6 +510,10 @@ function connect() {
   socket.on('message', async (data) => {
     let msg;
     try { msg = JSON.parse(data.toString()); } catch { return; }
+    if (msg.type === 'control' && msg.action === 'set_auto_approve') {
+      setAutoApprove(msg.values);
+      return;
+    }
     if (msg.type !== 'command') return;
     console.log(`→ ${msg.action} ${JSON.stringify(msg.params || {}).slice(0, 80)}`);
     const result = await executeCommand(msg);

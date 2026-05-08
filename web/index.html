@@ -1225,6 +1225,31 @@
     return `${proto}//${location.host}/ws?role=client&token=${encodeURIComponent(bridgeToken())}`;
   }
 
+  // Auto-approve preferences — persist across reloads, re-sent on every
+  // bridge reconnect so the helper stays in sync with the UI.
+  function loadAutoApprove() {
+    try { return JSON.parse(localStorage.getItem('clawcode.autoApprove.v1')) || {}; }
+    catch { return {}; }
+  }
+  function saveAutoApprove(values) {
+    localStorage.setItem('clawcode.autoApprove.v1', JSON.stringify(values));
+  }
+  bridge.autoApprove = Object.assign(
+    { shell: false, fs: false, registry: false, services: false },
+    loadAutoApprove(),
+  );
+
+  function sendAutoApprove() {
+    if (!bridge.ws || bridge.ws.readyState !== 1) return;
+    if (bridge.executors.desktop !== 'connected') return;
+    bridge.ws.send(JSON.stringify({
+      type: 'control',
+      target: 'desktop',
+      action: 'set_auto_approve',
+      values: bridge.autoApprove,
+    }));
+  }
+
   function bridgeConnect() {
     if (bridge.ws && (bridge.ws.readyState === 0 || bridge.ws.readyState === 1)) return;
     try { bridge.ws = new WebSocket(bridgeUrl()); }
@@ -1236,9 +1261,14 @@
     bridge.ws.addEventListener('message', (ev) => {
       let msg; try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.type === 'bridge_status') {
+        const wasDesktopConnected = bridge.executors.desktop === 'connected';
         bridge.state = msg.state;
         if (msg.executors) bridge.executors = msg.executors;
         else bridge.executors.extension = msg.state;
+        // Replay auto-approve config on (re)connect of the desktop helper.
+        if (!wasDesktopConnected && bridge.executors.desktop === 'connected') {
+          setTimeout(sendAutoApprove, 100);
+        }
         bridge.listeners.forEach(fn => fn());
       } else if (msg.type === 'result' && msg.id && bridge.pending.has(msg.id)) {
         const p = bridge.pending.get(msg.id);
@@ -1325,6 +1355,22 @@
           <li>Leave that PowerShell window open. Ctrl+C to revoke control instantly.</li>
         </ol>
       </details>
+      <label class="block text-[10px] font-mono uppercase tracking-widest mb-2" style="color: var(--fg-dim);">Auto-approve (skip y/N prompts)</label>
+      <div class="grid grid-cols-2 gap-1.5 mb-2">
+        ${['shell', 'fs', 'registry', 'services'].map(cat => `
+          <label class="flex items-center gap-2 p-1.5 border cursor-pointer text-[11.5px]" style="border-color: var(--border-strong); color: var(--fg);">
+            <input type="checkbox" data-aa="${cat}" ${bridge.autoApprove[cat] ? 'checked' : ''} class="aa-toggle" />
+            <span class="font-mono">${cat}</span>
+          </label>
+        `).join('')}
+      </div>
+      <button id="aaAll" class="w-full mb-3 px-2 py-1 text-[11px] font-mono border hover:bg-rust-500 hover:text-ink-900 hover:border-rust-500" style="border-color: var(--border-strong); color: var(--fg);">
+        ${['shell','fs','registry','services'].every(c => bridge.autoApprove[c]) ? 'CLEAR all auto-approve' : 'YOLO — auto-approve everything'}
+      </button>
+      <p class="text-[10px] font-mono mb-3" style="color: var(--fg-dim);">
+        category must also be enabled with <code>--allow=&lt;cat&gt;</code> when starting the helper.
+      </p>
+
       <label class="block text-[10px] font-mono uppercase tracking-widest mb-1" style="color: var(--fg-dim);">Quick test</label>
       <div class="flex gap-1 flex-wrap mb-2">
         <button data-cmd="screenshot" class="bridge-test px-2 py-1 text-[11px] font-mono border hover:bg-ember-500 hover:text-ink-900 hover:border-ember-500" style="border-color: var(--border-strong); color: var(--fg);">screenshot</button>
@@ -1336,6 +1382,24 @@
     cont.appendChild(card);
     card.querySelector('#bridgeCopy').addEventListener('click', () => {
       navigator.clipboard.writeText(token).then(() => toast('Token copied.'));
+    });
+    card.querySelectorAll('.aa-toggle').forEach(cb => {
+      cb.addEventListener('change', () => {
+        bridge.autoApprove[cb.dataset.aa] = cb.checked;
+        saveAutoApprove(bridge.autoApprove);
+        sendAutoApprove();
+        renderRight();
+        toast(`auto-approve ${cb.dataset.aa}: ${cb.checked ? 'ON' : 'off'}`);
+      });
+    });
+    card.querySelector('#aaAll').addEventListener('click', () => {
+      const allOn = ['shell','fs','registry','services'].every(c => bridge.autoApprove[c]);
+      const next = !allOn;
+      ['shell','fs','registry','services'].forEach(c => bridge.autoApprove[c] = next);
+      saveAutoApprove(bridge.autoApprove);
+      sendAutoApprove();
+      renderRight();
+      toast(next ? '⚠ YOLO mode — all auto-approve ON' : 'auto-approve cleared');
     });
     const out = card.querySelector('#bridgeOut');
     card.querySelectorAll('.bridge-test').forEach(btn => {
