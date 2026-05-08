@@ -284,28 +284,42 @@ const server = createServer(async (req, res) => {
 });
 
 /* ------------------------------------------------------------------
- * Browser bridge — pairing relay between the Chrome extension and the
- * web chat. Two roles connect to /ws with the same `token` query param:
- *   role=extension  → installed Chrome extension on the user's machine
- *   role=client     → the chat UI in their browser
- * The relay forwards JSON messages between the two halves. Tokens are
- * generated client-side and only ever live in memory here. */
-const pairs = new Map(); // token -> { extension: ws|null, clients: Set<ws> }
+ * Bridge relay — pairing between local executors and the web chat.
+ * Three roles connect to /ws with the same `token` query param:
+ *   role=extension  → Chrome extension (browser tab control)
+ *   role=desktop    → native helper (mouse, keyboard, screenshot)
+ *   role=client     → the chat UI in the browser
+ * Messages flow: client → executor (by command.target), executor → client.
+ * Tokens are generated client-side and only ever live in memory here. */
+const pairs = new Map(); // token -> { extension, desktop, clients: Set<ws> }
 
 function getOrCreatePair(token) {
   let pair = pairs.get(token);
   if (!pair) {
-    pair = { extension: null, clients: new Set() };
+    pair = { extension: null, desktop: null, clients: new Set() };
     pairs.set(token, pair);
   }
   return pair;
 }
 
+function bridgeStatusFor(pair) {
+  return {
+    extension: pair.extension && pair.extension.readyState === 1 ? 'connected' : 'disconnected',
+    desktop: pair.desktop && pair.desktop.readyState === 1 ? 'connected' : 'disconnected',
+  };
+}
+
 function broadcastBridgeStatus(token) {
   const pair = pairs.get(token);
   if (!pair) return;
-  const state = pair.extension && pair.extension.readyState === 1 ? 'connected' : 'disconnected';
-  const msg = JSON.stringify({ type: 'bridge_status', state });
+  const status = bridgeStatusFor(pair);
+  const msg = JSON.stringify({
+    type: 'bridge_status',
+    // Back-compat: old clients only know about the single `state` field, which
+    // we keep meaning "extension state". New clients use `executors`.
+    state: status.extension,
+    executors: status,
+  });
   for (const client of pair.clients) {
     if (client.readyState === 1) client.send(msg);
   }
@@ -316,31 +330,31 @@ wss.on('connection', (ws, req, ctx) => {
   const { role, token } = ctx;
   const pair = getOrCreatePair(token);
 
-  if (role === 'extension') {
-    if (pair.extension && pair.extension.readyState === 1) {
-      try { pair.extension.close(1008, 'replaced'); } catch { /* noop */ }
+  if (role === 'extension' || role === 'desktop') {
+    if (pair[role] && pair[role].readyState === 1) {
+      try { pair[role].close(1008, 'replaced'); } catch { /* noop */ }
     }
-    pair.extension = ws;
+    pair[role] = ws;
     broadcastBridgeStatus(token);
   } else {
     pair.clients.add(ws);
-    ws.send(JSON.stringify({
-      type: 'bridge_status',
-      state: pair.extension && pair.extension.readyState === 1 ? 'connected' : 'disconnected',
-    }));
+    const status = bridgeStatusFor(pair);
+    ws.send(JSON.stringify({ type: 'bridge_status', state: status.extension, executors: status }));
   }
 
   ws.on('message', (data) => {
     let msg;
     try { msg = JSON.parse(data.toString()); } catch { return; }
     if (role === 'client' && msg.type === 'command') {
-      // forward to extension
-      if (pair.extension && pair.extension.readyState === 1) {
-        pair.extension.send(JSON.stringify(msg));
+      // Route by target: 'desktop' → desktop helper, anything else → extension.
+      const target = msg.target === 'desktop' ? 'desktop' : 'extension';
+      const executor = pair[target];
+      if (executor && executor.readyState === 1) {
+        executor.send(JSON.stringify(msg));
       } else {
-        ws.send(JSON.stringify({ type: 'result', id: msg.id, ok: false, error: 'extension not connected' }));
+        ws.send(JSON.stringify({ type: 'result', id: msg.id, ok: false, error: `${target} not connected` }));
       }
-    } else if (role === 'extension' && msg.type === 'result') {
+    } else if ((role === 'extension' || role === 'desktop') && msg.type === 'result') {
       // forward result to all clients (they filter by id)
       for (const client of pair.clients) {
         if (client.readyState === 1) client.send(JSON.stringify(msg));
@@ -349,13 +363,13 @@ wss.on('connection', (ws, req, ctx) => {
   });
 
   ws.on('close', () => {
-    if (role === 'extension') {
-      if (pair.extension === ws) pair.extension = null;
+    if (role === 'extension' || role === 'desktop') {
+      if (pair[role] === ws) pair[role] = null;
       broadcastBridgeStatus(token);
     } else {
       pair.clients.delete(ws);
     }
-    if (!pair.extension && pair.clients.size === 0) pairs.delete(token);
+    if (!pair.extension && !pair.desktop && pair.clients.size === 0) pairs.delete(token);
   });
 });
 
@@ -376,7 +390,7 @@ server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, 'http://x');
   const role = url.searchParams.get('role');
   const token = url.searchParams.get('token');
-  if (role !== 'extension' && role !== 'client') {
+  if (role !== 'extension' && role !== 'client' && role !== 'desktop') {
     socket.destroy();
     return;
   }

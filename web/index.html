@@ -1204,8 +1204,9 @@
      ============================================================ */
   const bridge = {
     ws: null,
-    state: 'disconnected',
-    pending: new Map(), // id -> {resolve, reject, timer}
+    state: 'disconnected',                // back-compat: alias for executors.extension
+    executors: { extension: 'disconnected', desktop: 'disconnected' },
+    pending: new Map(),                   // id -> {resolve, reject, timer}
     listeners: new Set(),
   };
 
@@ -1236,6 +1237,8 @@
       let msg; try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.type === 'bridge_status') {
         bridge.state = msg.state;
+        if (msg.executors) bridge.executors = msg.executors;
+        else bridge.executors.extension = msg.state;
         bridge.listeners.forEach(fn => fn());
       } else if (msg.type === 'result' && msg.id && bridge.pending.has(msg.id)) {
         const p = bridge.pending.get(msg.id);
@@ -1251,17 +1254,21 @@
     });
   }
 
-  function bridgeCommand(action, params = {}, timeoutMs = 30000) {
+  function bridgeCommand(action, params = {}, opts = {}) {
+    const { target = 'browser', timeoutMs = 30000 } = opts;
+    const executorKey = target === 'desktop' ? 'desktop' : 'extension';
     return new Promise((resolveP, rejectP) => {
       if (!bridge.ws || bridge.ws.readyState !== 1) return rejectP(new Error('relay not connected'));
-      if (bridge.state !== 'connected') return rejectP(new Error('extension not connected — open the claw bridge popup and paste your token'));
+      if (bridge.executors[executorKey] !== 'connected') {
+        return rejectP(new Error(`${executorKey} not connected — start the ${executorKey === 'desktop' ? 'desktop helper' : 'Chrome extension'} first`));
+      }
       const id = 'cmd_' + Math.random().toString(36).slice(2, 10);
       const timer = setTimeout(() => {
         bridge.pending.delete(id);
         rejectP(new Error('command timed out'));
       }, timeoutMs);
       bridge.pending.set(id, { resolve: resolveP, reject: rejectP, timer });
-      bridge.ws.send(JSON.stringify({ type: 'command', id, action, params }));
+      bridge.ws.send(JSON.stringify({ type: 'command', id, target, action, params }));
     });
   }
 
@@ -1271,29 +1278,51 @@
     card.className = 'p-3 border';
     card.style.borderColor = 'var(--border)';
     card.style.background = 'var(--bg-elev-2)';
-    const stateColor = bridge.state === 'connected' ? '#6ace87' : bridge.state === 'pending' ? '#ec8a25' : '#6b6557';
+    const dot = (s) => s === 'connected' ? '#6ace87' : '#6b6557';
     card.innerHTML = `
-      <div class="flex items-center gap-2 mb-2">
-        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${stateColor};"></span>
-        <span class="font-display text-base tracking-tight" style="color: var(--fg);">Browser bridge</span>
+      <div class="flex items-center gap-2 mb-3">
+        <span class="font-display text-base tracking-tight" style="color: var(--fg);">Local control</span>
+      </div>
+      <div class="grid grid-cols-2 gap-2 mb-3 text-[11.5px]">
+        <div class="p-2 border" style="border-color: var(--border-strong); background: var(--bg);">
+          <div class="flex items-center gap-2 mb-1">
+            <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${dot(bridge.executors.extension)};"></span>
+            <span style="color: var(--fg);"><strong>Browser</strong></span>
+          </div>
+          <div class="font-mono text-[10px]" style="color: var(--fg-dim);">${bridge.executors.extension}</div>
+        </div>
+        <div class="p-2 border" style="border-color: var(--border-strong); background: var(--bg);">
+          <div class="flex items-center gap-2 mb-1">
+            <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${dot(bridge.executors.desktop)};"></span>
+            <span style="color: var(--fg);"><strong>Desktop</strong></span>
+          </div>
+          <div class="font-mono text-[10px]" style="color: var(--fg-dim);">${bridge.executors.desktop}</div>
+        </div>
       </div>
       <p class="text-[11.5px] mb-3 leading-relaxed" style="color: var(--fg-muted);">
-        Bridge status: <strong style="color: var(--fg);">${bridge.state}</strong>.
-        Once paired, the chat can click, type, screenshot, and navigate on your active Chrome tab by emitting <code>&lt;action&gt;...&lt;/action&gt;</code> blocks.
+        Once both are paired, the chat can drive your Chrome tab AND your real mouse/keyboard via <code>&lt;action&gt;{"target":"browser|desktop",...}&lt;/action&gt;</code> blocks.
       </p>
       <label class="block text-[10px] font-mono uppercase tracking-widest mb-1" style="color: var(--fg-dim);">Pairing token</label>
       <div class="flex gap-1 mb-3">
         <input id="bridgeToken" readonly class="w-full bg-transparent border px-2 py-1.5 text-xs font-mono" style="border-color: var(--border-strong); color: var(--fg);" value="${token}" />
         <button id="bridgeCopy" class="px-2 text-xs border hover:bg-ember-500 hover:text-ink-900 hover:border-ember-500" style="border-color: var(--border-strong); color: var(--fg);" title="Copy">⎘</button>
       </div>
-      <details class="mb-3">
-        <summary class="text-[11px] cursor-pointer" style="color: var(--fg-muted);">How to install the extension</summary>
+      <details class="mb-2">
+        <summary class="text-[11px] cursor-pointer" style="color: var(--fg-muted);">How to install the Chrome extension (browser control)</summary>
         <ol class="text-[11px] mt-2 leading-relaxed pl-5" style="color: var(--fg-muted); list-style: decimal;">
-          <li>Download the extension folder: <a href="https://github.com/ZENSEE1314/clawcode/tree/web-ui/web/extension" target="_blank" style="color: var(--accent);">github.com/ZENSEE1314/clawcode/web/extension</a></li>
-          <li>In Chrome, open <code>chrome://extensions</code> → toggle <strong>Developer mode</strong> on (top-right)</li>
-          <li>Click <strong>Load unpacked</strong> → select the <code>extension</code> folder</li>
-          <li>Click the new "claw bridge" extension icon in your toolbar</li>
-          <li>Paste this pairing token, hit <strong>Save & connect</strong></li>
+          <li>Download <a href="https://github.com/ZENSEE1314/clawcode/tree/web-ui/web/extension" target="_blank" style="color: var(--accent);">web/extension</a></li>
+          <li>Chrome → <code>chrome://extensions</code> → toggle <strong>Developer mode</strong> on</li>
+          <li>Click <strong>Load unpacked</strong> → pick the <code>extension</code> folder</li>
+          <li>Click the "claw bridge" toolbar icon, paste the token above, <strong>Save & connect</strong></li>
+        </ol>
+      </details>
+      <details class="mb-3">
+        <summary class="text-[11px] cursor-pointer" style="color: var(--fg-muted);">How to install the desktop helper (mouse + keyboard control, Windows)</summary>
+        <ol class="text-[11px] mt-2 leading-relaxed pl-5" style="color: var(--fg-muted); list-style: decimal;">
+          <li>Download <a href="https://github.com/ZENSEE1314/clawcode/tree/web-ui/desktop-helper" target="_blank" style="color: var(--accent);">desktop-helper</a></li>
+          <li>Open PowerShell in that folder, run: <code>npm install</code></li>
+          <li>Then: <code>node helper.js --token=&lt;paste-token-above&gt;</code></li>
+          <li>Leave that PowerShell window open. Ctrl+C to revoke control instantly.</li>
         </ol>
       </details>
       <label class="block text-[10px] font-mono uppercase tracking-widest mb-1" style="color: var(--fg-dim);">Quick test</label>
@@ -1337,7 +1366,38 @@
   const ACTION_RE = /<action>\s*(\{[\s\S]*?\})\s*<\/action>/g;
 
   function bridgeSystemPrompt() {
-    return `\n\nBROWSER BRIDGE: when the user wants you to operate their browser, emit one or more action blocks like:\n<action>{"action":"navigate","params":{"url":"https://example.com"}}</action>\n<action>{"action":"click","params":{"selector":"button.submit"}}</action>\n<action>{"action":"type","params":{"text":"hello"}}</action>\n<action>{"action":"screenshot"}</action>\n<action>{"action":"read_page"}</action>\n<action>{"action":"find","params":{"query":"search box"}}</action>\n<action>{"action":"scroll","params":{"direction":"down","amount":3}}</action>\nAfter each block, wait — results will be fed back as a user message before continuing. Do not invent results; only emit the next step when you have observed the previous one.`;
+    const browserOn = bridge.executors.extension === 'connected';
+    const desktopOn = bridge.executors.desktop === 'connected';
+    if (!browserOn && !desktopOn) return '';
+    let s = '\n\nLOCAL CONTROL BRIDGE — emit action blocks to control the user\'s machine. Format:\n<action>{"target":"browser","action":"NAME","params":{...}}</action>\nAfter each block, STOP and wait — the harness will feed results back as a user message. Never invent results.';
+    if (browserOn) {
+      s += '\n\nBROWSER (target:"browser") — operates the active Chrome tab:\n'
+        + '  navigate     {url}\n'
+        + '  click        {selector} OR {x,y}\n'
+        + '  type         {text, selector?}        // selector defaults to focused element\n'
+        + '  screenshot   {}                       // returns dataUrl of visible tab\n'
+        + '  read_page    {}                       // returns title, url, first 8000 chars of innerText\n'
+        + '  find         {query}                  // search clickable elements by visible text\n'
+        + '  scroll       {direction:"up|down|left|right", amount?}';
+    }
+    if (desktopOn) {
+      s += '\n\nDESKTOP (target:"desktop") — operates the user\'s Windows OS (Notepad, Explorer, anything outside the browser):\n'
+        + '  screenshot         {}                       // full virtual desktop\n'
+        + '  screen_size        {}                       // {width, height}\n'
+        + '  mouse_move         {x,y}\n'
+        + '  mouse_click        {x,y, button?:"left|right|middle"}\n'
+        + '  mouse_double_click {x,y}\n'
+        + '  key_type           {text}                   // types into focused window\n'
+        + '  key_combo          {combo:"ctrl+c"}         // also alt, shift; no win key\n'
+        + '  open_app           {name:"notepad"}\n'
+        + 'For desktop work, ALWAYS take a screenshot first to see where things are. Coordinates are in physical pixels from the top-left of the virtual screen.';
+    }
+    s += '\n\nOPERATING RULES:\n'
+      + '- Plan in 1-2 short sentences, then emit ONE action, then stop.\n'
+      + '- After each result, decide the next action. Don\'t batch many actions in one reply.\n'
+      + '- If a result is unexpected, screenshot and re-orient before continuing.\n'
+      + '- Stop and ask the user before destructive actions (closing apps, deleting files, sending emails, posting publicly).';
+    return s;
   }
 
   async function runBridgeActions(assistantContent) {
@@ -1350,7 +1410,7 @@
       catch (err) { results.push({ error: `invalid JSON in action block: ${err.message}` }); continue; }
       if (!parsed.action) { results.push({ error: 'action block missing "action" field' }); continue; }
       try {
-        const r = await bridgeCommand(parsed.action, parsed.params || {});
+        const r = await bridgeCommand(parsed.action, parsed.params || {}, { target: parsed.target || 'browser' });
         // Skip the screenshot blob in the feedback to keep tokens reasonable
         const sanitized = r.data?.dataUrl
           ? { ...r, data: { ...r.data, dataUrl: '[screenshot captured, ' + Math.round(r.data.dataUrl.length / 1024) + 'kb]' } }
@@ -1510,7 +1570,7 @@
       // Loop up to 5 turns so multi-step plans complete without manual re-prompting.
       let loopGuard = 5;
       let lastContent = assistantMsg.content;
-      while (loopGuard-- > 0 && bridge.state === 'connected') {
+      while (loopGuard-- > 0 && (bridge.executors.extension === 'connected' || bridge.executors.desktop === 'connected')) {
         const results = await runBridgeActions(lastContent);
         if (!results || results.length === 0) break;
         const feedback = `BRIDGE RESULTS:\n` + results.map((r, i) => `[${i + 1}] ${JSON.stringify(r).slice(0, 600)}`).join('\n');
@@ -1585,7 +1645,7 @@
       const skillNote = `\n\nActive skills available to you (UI scaffolding — invoke conceptually): ${enabledSkills.map(s => s.name).join(', ')}.`;
       sys = (sys || 'You are a helpful local assistant.') + skillNote;
     }
-    if (bridge.state === 'connected') {
+    if (bridge.executors.extension === 'connected' || bridge.executors.desktop === 'connected') {
       sys = (sys || 'You are a helpful local assistant.') + bridgeSystemPrompt();
     }
     if (sys) out.push({ role: 'system', content: sys });

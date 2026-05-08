@@ -1,0 +1,16 @@
+{
+  "name": "claw-desktop-helper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local helper that lets the claw-code chat control your mouse, keyboard, and take screenshots on Windows. Pairs with the same token as the Chrome extension.",
+  "scripts": {
+    "start": "node helper.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.20.0"
+  }
+}
