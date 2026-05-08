@@ -3,26 +3,44 @@
  * Pairs with the claw-code web app via the /ws relay (same token as the
  * Chrome extension). Receives JSON commands and executes them locally.
  *
- * Capabilities (intentionally minimal for v1):
- *   screenshot, mouse_move, mouse_click, mouse_double_click,
- *   key_type, key_combo, screen_size, open_app
+ * SAFETY MODEL
+ * ─────────────
+ * Capability categories must be explicitly opted into at startup:
+ *   --allow=shell        → shell command execution
+ *   --allow=fs           → file read/write/delete, list_dir
+ *   --allow=registry     → registry read/write
+ *   --allow=services     → list/start/stop/restart Windows services
+ * (Combine with commas: --allow=shell,fs)
  *
- * Explicit non-capabilities: shell exec, file read, file write.
- * Add them later only with confirmation prompts.
+ * Without --yolo, every WRITE/DESTRUCTIVE command pops a y/N prompt in
+ * THIS terminal window. You see exactly what the model wants to do and
+ * approve or deny. No prompt → no execution.
  *
- * Implementation: spawns PowerShell for each action — no native deps,
- * works on stock Windows. ~200ms latency per command.
+ * --yolo skips the per-command prompts. Only use it when you actively
+ * want to let the model rip and you accept the consequences.
+ *
+ * READ-ONLY commands inside an enabled category never prompt.
+ *
+ * Always-on commands (no --allow needed):
+ *   screenshot, screen_size, mouse_*, key_type, key_combo, open_app
  */
 
 import { WebSocket } from 'ws';
 import { spawn } from 'node:child_process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import {
+  readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync,
+  readdirSync, statSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, isAbsolute, resolve as pathResolve, dirname } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { createInterface } from 'node:readline';
 
 const CONFIG_PATH = join(homedir(), '.claw-desktop-helper.json');
 const DEFAULT_RELAY = 'wss://clawcode-production.up.railway.app/ws';
+const DEFAULT_SHELL_TIMEOUT_MS = 30_000;
+const MAX_FILE_BYTES = 5 * 1024 * 1024;            // 5 MB cap on read/write
+const CONFIRM_TIMEOUT_MS = 60_000;
 
 function loadConfig() {
   if (!existsSync(CONFIG_PATH)) return {};
@@ -43,6 +61,10 @@ const args = Object.fromEntries(
 
 const relay = args.relay || cfg.relay || DEFAULT_RELAY;
 let token = args.token || cfg.token;
+const yolo = !!args.yolo;
+const allow = new Set(
+  String(args.allow || '').split(',').map(s => s.trim()).filter(Boolean)
+);
 
 if (!token) {
   console.error('\n  no token configured.');
@@ -58,9 +80,51 @@ if (args.token || args.relay) {
 
 console.log(`\n  ┌─────────────────────────────────────────`);
 console.log(`  │ claw desktop helper`);
-console.log(`  │ relay: ${relay}`);
-console.log(`  │ token: ${token.slice(0, 8)}…${token.slice(-4)}`);
+console.log(`  │ relay  : ${relay}`);
+console.log(`  │ token  : ${token.slice(0, 8)}…${token.slice(-4)}`);
+console.log(`  │ allow  : ${allow.size ? [...allow].join(', ') : '(none — only mouse/keyboard/screenshot)'}`);
+console.log(`  │ confirm: ${yolo ? 'OFF (--yolo)  ⚠ BE CAREFUL' : 'ON (per-command y/N prompt)'}`);
 console.log(`  └─────────────────────────────────────────\n`);
+
+if (yolo && allow.size) {
+  console.log('⚠ YOLO MODE: destructive commands run without confirmation.');
+  console.log('  Hit Ctrl+C to revoke control instantly.\n');
+}
+
+/* ----------------------- confirmation prompt --------------------- */
+
+const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+let confirmQueue = Promise.resolve();
+
+function confirmAction(label, details) {
+  if (yolo) return Promise.resolve(true);
+  // Serialise prompts so multiple commands queue up cleanly.
+  confirmQueue = confirmQueue.then(() => new Promise(resolveP => {
+    console.log('\n──────── confirm ────────');
+    console.log(`  ${label}`);
+    for (const [k, v] of Object.entries(details || {})) {
+      const shown = String(v).length > 200 ? String(v).slice(0, 200) + '…' : v;
+      console.log(`  ${k.padEnd(8)}: ${shown}`);
+    }
+    let timer = setTimeout(() => {
+      console.log('  → timed out, denied.');
+      resolveP(false);
+    }, CONFIRM_TIMEOUT_MS);
+    rl.question('allow? [y/N]: ', (answer) => {
+      clearTimeout(timer);
+      const ok = /^y(es)?$/i.test(answer.trim());
+      console.log(`  → ${ok ? 'allowed' : 'denied'}`);
+      resolveP(ok);
+    });
+  }));
+  return confirmQueue;
+}
+
+function requireAllow(category) {
+  if (!allow.has(category)) {
+    throw new Error(`category "${category}" not enabled — restart helper with --allow=${category}`);
+  }
+}
 
 /* ----------------------- PowerShell bridge ------------------------ */
 
@@ -81,7 +145,7 @@ function runPowerShell(script, opts = {}) {
   });
 }
 
-/* ----------------------- action implementations ------------------- */
+/* ----------------------- mouse / keyboard / screenshot ----------- */
 
 async function screenSize() {
   const out = await runPowerShell(`
@@ -134,13 +198,11 @@ async function mouseDoubleClick(x, y) {
 }
 
 function escapeForSendKeys(text) {
-  // SendKeys reserves: + ^ % ~ ( ) { } [ ]
   return text.replace(/[+^%~(){}[\]]/g, ch => `{${ch}}`);
 }
 
 async function keyType(text) {
   if (typeof text !== 'string') throw new Error('text required');
-  // SendWait can struggle with long strings; chunk every 200 chars
   const chunks = text.match(/.{1,200}/gs) || [text];
   for (const chunk of chunks) {
     const escaped = escapeForSendKeys(chunk);
@@ -164,7 +226,6 @@ const COMBO_KEY_MAP = {
 };
 
 async function keyCombo(combo) {
-  // Examples: "ctrl+c", "alt+tab", "win+l", "ctrl+shift+t"
   if (typeof combo !== 'string') throw new Error('combo string required');
   const parts = combo.toLowerCase().split('+').map(s => s.trim());
   const mods = { ctrl: '^', alt: '%', shift: '+' };
@@ -173,8 +234,7 @@ async function keyCombo(combo) {
   for (const p of parts) {
     if (mods[p]) prefix += mods[p];
     else if (p === 'win' || p === 'meta' || p === 'cmd') {
-      // SendKeys has no Windows-key support; fall back to powershell+user32
-      throw new Error('windows-key combos not supported by SendKeys; ask for a different combo');
+      throw new Error('windows-key combos not supported by SendKeys');
     } else key = p;
   }
   if (!key) throw new Error('combo must include a non-modifier key');
@@ -199,11 +259,8 @@ async function screenshot() {
     $g.Dispose(); $bmp.Dispose()
   `, { timeout: 15000 });
   const data = readFileSync(file);
-  try { require('node:fs').unlinkSync(file); } catch { /* noop */ }
-  return {
-    ok: true,
-    data: { dataUrl: `data:image/png;base64,${data.toString('base64')}` },
-  };
+  try { unlinkSync(file); } catch { /* noop */ }
+  return { ok: true, data: { dataUrl: `data:image/png;base64,${data.toString('base64')}` } };
 }
 
 async function openApp(name) {
@@ -214,20 +271,196 @@ async function openApp(name) {
   return { ok: true, app: name };
 }
 
+/* ----------------------- shell ----------------------------------- */
+
+async function shellExec(command, opts = {}) {
+  requireAllow('shell');
+  if (typeof command !== 'string' || !command.trim()) throw new Error('command required');
+  const cwd = opts.cwd && typeof opts.cwd === 'string' ? opts.cwd : process.cwd();
+  const ok = await confirmAction('shell command', { command, cwd });
+  if (!ok) return { ok: false, error: 'denied by user' };
+  const timeout = Math.min(opts.timeout || DEFAULT_SHELL_TIMEOUT_MS, 5 * 60_000);
+  // Run via PowerShell so the model can use any PS or native command.
+  const out = await new Promise((resolveP) => {
+    const ps = spawn('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-Command', command,
+    ], { cwd, windowsHide: true });
+    let stdout = '', stderr = '';
+    ps.stdout.on('data', d => stdout += d.toString());
+    ps.stderr.on('data', d => stderr += d.toString());
+    const timer = setTimeout(() => { try { ps.kill(); } catch { /* noop */ } }, timeout);
+    ps.on('close', code => {
+      clearTimeout(timer);
+      resolveP({ exitCode: code, stdout: stdout.slice(0, 16_000), stderr: stderr.slice(0, 8_000) });
+    });
+  });
+  return { ok: out.exitCode === 0, data: out };
+}
+
+/* ----------------------- filesystem ------------------------------ */
+
+function safePath(p) {
+  if (typeof p !== 'string' || !p.trim()) throw new Error('path required');
+  if (!isAbsolute(p)) p = pathResolve(p);
+  return p;
+}
+
+async function readFile(path) {
+  requireAllow('fs');
+  const p = safePath(path);
+  const st = statSync(p);
+  if (!st.isFile()) throw new Error('not a file');
+  if (st.size > MAX_FILE_BYTES) throw new Error(`file > ${MAX_FILE_BYTES} bytes`);
+  const data = readFileSync(p, 'utf8');
+  return { ok: true, data: { path: p, bytes: st.size, content: data } };
+}
+
+async function writeFile(path, content, append = false) {
+  requireAllow('fs');
+  const p = safePath(path);
+  if (typeof content !== 'string') throw new Error('content must be a string');
+  if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new Error(`content > ${MAX_FILE_BYTES} bytes`);
+  const exists = existsSync(p);
+  const ok = await confirmAction(append ? 'append to file' : (exists ? 'OVERWRITE existing file' : 'create file'), {
+    path: p,
+    bytes: Buffer.byteLength(content, 'utf8'),
+    preview: content.slice(0, 200),
+  });
+  if (!ok) return { ok: false, error: 'denied by user' };
+  mkdirSync(dirname(p), { recursive: true });
+  if (append) writeFileSync(p, (existsSync(p) ? readFileSync(p, 'utf8') : '') + content, 'utf8');
+  else writeFileSync(p, content, 'utf8');
+  return { ok: true, data: { path: p, bytes: Buffer.byteLength(content, 'utf8') } };
+}
+
+async function deleteFile(path) {
+  requireAllow('fs');
+  const p = safePath(path);
+  if (!existsSync(p)) return { ok: false, error: 'not found' };
+  const st = statSync(p);
+  if (!st.isFile()) throw new Error('not a file (delete_dir not supported — use shell rm if needed)');
+  const ok = await confirmAction('DELETE file', { path: p, bytes: st.size });
+  if (!ok) return { ok: false, error: 'denied by user' };
+  unlinkSync(p);
+  return { ok: true };
+}
+
+async function listDir(path, depth = 1) {
+  requireAllow('fs');
+  const p = safePath(path);
+  const st = statSync(p);
+  if (!st.isDirectory()) throw new Error('not a directory');
+  const entries = readdirSync(p, { withFileTypes: true }).slice(0, 500).map(e => ({
+    name: e.name,
+    type: e.isDirectory() ? 'dir' : e.isFile() ? 'file' : 'other',
+  }));
+  return { ok: true, data: { path: p, entries } };
+}
+
+/* ----------------------- registry -------------------------------- */
+
+const ALLOWED_HIVES = ['HKCU', 'HKLM', 'HKCR', 'HKU', 'HKCC'];
+
+function validateRegPath(path) {
+  if (typeof path !== 'string') throw new Error('path required');
+  const hive = path.split(':')[0].toUpperCase();
+  if (!ALLOWED_HIVES.includes(hive)) throw new Error(`hive must be one of ${ALLOWED_HIVES.join(', ')}`);
+  return path;
+}
+
+async function registryRead(path, name) {
+  requireAllow('registry');
+  validateRegPath(path);
+  const out = await runPowerShell(name
+    ? `(Get-ItemProperty -Path '${path.replace(/'/g, "''")}' -Name '${String(name).replace(/'/g, "''")}').'${String(name).replace(/'/g, "''")}'`
+    : `Get-Item -Path '${path.replace(/'/g, "''")}' | Select-Object -ExpandProperty Property`);
+  return { ok: true, data: out };
+}
+
+async function registryWrite(path, name, value, type = 'String') {
+  requireAllow('registry');
+  validateRegPath(path);
+  if (typeof name !== 'string' || !name) throw new Error('name required');
+  const allowedTypes = ['String', 'ExpandString', 'DWord', 'QWord', 'Binary', 'MultiString'];
+  if (!allowedTypes.includes(type)) throw new Error(`type must be one of ${allowedTypes.join(', ')}`);
+  const ok = await confirmAction('REGISTRY write', { path, name, value: String(value), type });
+  if (!ok) return { ok: false, error: 'denied by user' };
+  const valArg = type === 'DWord' || type === 'QWord' ? Number(value) : `'${String(value).replace(/'/g, "''")}'`;
+  await runPowerShell(`
+    if (-not (Test-Path '${path.replace(/'/g, "''")}')) { New-Item -Path '${path.replace(/'/g, "''")}' -Force | Out-Null }
+    Set-ItemProperty -Path '${path.replace(/'/g, "''")}' -Name '${name.replace(/'/g, "''")}' -Value ${valArg} -Type ${type} -Force
+  `);
+  return { ok: true };
+}
+
+/* ----------------------- services -------------------------------- */
+
+async function serviceList(filter = '') {
+  requireAllow('services');
+  const f = filter ? `'*${String(filter).replace(/'/g, "''")}*'` : `'*'`;
+  const out = await runPowerShell(`Get-Service -Name ${f} | Select-Object Name,Status,DisplayName | ConvertTo-Json -Compress`);
+  let parsed;
+  try { parsed = JSON.parse(out); } catch { parsed = out; }
+  if (!Array.isArray(parsed) && parsed) parsed = [parsed];
+  return { ok: true, data: parsed };
+}
+
+async function serviceStatus(name) {
+  requireAllow('services');
+  if (typeof name !== 'string' || !name) throw new Error('service name required');
+  const out = await runPowerShell(`Get-Service -Name '${name.replace(/'/g, "''")}' | Select-Object Name,Status,DisplayName,StartType | ConvertTo-Json -Compress`);
+  let parsed; try { parsed = JSON.parse(out); } catch { parsed = out; }
+  return { ok: true, data: parsed };
+}
+
+async function serviceControl(action, name) {
+  requireAllow('services');
+  if (typeof name !== 'string' || !name) throw new Error('service name required');
+  const verb = { start: 'Start', stop: 'Stop', restart: 'Restart' }[action];
+  if (!verb) throw new Error('action must be start|stop|restart');
+  const ok = await confirmAction(`SERVICE ${verb.toUpperCase()}`, { name });
+  if (!ok) return { ok: false, error: 'denied by user' };
+  await runPowerShell(`${verb}-Service -Name '${name.replace(/'/g, "''")}' -Force`);
+  return { ok: true };
+}
+
 /* ----------------------- command dispatcher ----------------------- */
 
 async function executeCommand(msg) {
   const { action, params = {} } = msg;
   try {
     switch (action) {
-      case 'screen_size':       return { ok: true, data: await screenSize() };
-      case 'mouse_move':        return { ...(await mouseMove(params.x, params.y)) };
-      case 'mouse_click':       return { ...(await mouseClick(params.x, params.y, params.button)) };
-      case 'mouse_double_click':return { ...(await mouseDoubleClick(params.x, params.y)) };
-      case 'key_type':          return { ...(await keyType(params.text)) };
-      case 'key_combo':         return { ...(await keyCombo(params.combo)) };
-      case 'screenshot':        return await screenshot();
-      case 'open_app':          return { ...(await openApp(params.name)) };
+      // mouse / keyboard / screen — always available
+      case 'screen_size':        return { ok: true, data: await screenSize() };
+      case 'mouse_move':         return { ...(await mouseMove(params.x, params.y)) };
+      case 'mouse_click':        return { ...(await mouseClick(params.x, params.y, params.button)) };
+      case 'mouse_double_click': return { ...(await mouseDoubleClick(params.x, params.y)) };
+      case 'key_type':           return { ...(await keyType(params.text)) };
+      case 'key_combo':          return { ...(await keyCombo(params.combo)) };
+      case 'screenshot':         return await screenshot();
+      case 'open_app':           return { ...(await openApp(params.name)) };
+
+      // shell — needs --allow=shell
+      case 'shell':              return await shellExec(params.command, { cwd: params.cwd, timeout: params.timeout });
+
+      // filesystem — needs --allow=fs
+      case 'read_file':          return await readFile(params.path);
+      case 'write_file':         return await writeFile(params.path, params.content, !!params.append);
+      case 'delete_file':        return await deleteFile(params.path);
+      case 'list_dir':           return await listDir(params.path);
+
+      // registry — needs --allow=registry
+      case 'registry_read':      return await registryRead(params.path, params.name);
+      case 'registry_write':     return await registryWrite(params.path, params.name, params.value, params.type);
+
+      // services — needs --allow=services
+      case 'service_list':       return await serviceList(params.filter);
+      case 'service_status':     return await serviceStatus(params.name);
+      case 'service_start':      return await serviceControl('start', params.name);
+      case 'service_stop':       return await serviceControl('stop', params.name);
+      case 'service_restart':    return await serviceControl('restart', params.name);
+
       default: return { ok: false, error: `unknown desktop action: ${action}` };
     }
   } catch (err) {
@@ -285,5 +518,6 @@ connect();
 process.on('SIGINT', () => {
   console.log('\nshutting down.');
   try { socket?.close(); } catch { /* noop */ }
+  rl.close();
   process.exit(0);
 });

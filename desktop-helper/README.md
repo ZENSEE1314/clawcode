@@ -15,15 +15,44 @@ keyboard, and screen** — not just the browser tab.
 - `key_combo("ctrl+c")` — keyboard shortcut
 - `open_app("notepad")` — launch an application by name
 
-## What it deliberately can't do (yet)
+## What it can do (opt-in, with confirmation)
 
-- ❌ Shell command execution
-- ❌ File read / file write
-- ❌ Registry, services, or any system administration
-- ❌ Anything outside the calls above
+These categories are **off by default** — pass `--allow=<category>` flags
+when you start the helper to enable them. With confirmation on (the
+default), every WRITE/DESTRUCTIVE call pops a `y/N` prompt in the helper's
+PowerShell window. You see exactly what the model wants to do.
 
-If you want shell access later, ping me and I'll add it with a per-command
-confirmation prompt.
+| Category | Flag | Read-only commands (no prompt) | Mutating commands (prompt unless `--yolo`) |
+|---|---|---|---|
+| Shell | `--allow=shell` | — | `shell {command}` (runs PowerShell, returns stdout/stderr) |
+| Filesystem | `--allow=fs` | `read_file`, `list_dir` | `write_file`, `delete_file` |
+| Registry | `--allow=registry` | `registry_read` | `registry_write` |
+| Services | `--allow=services` | `service_list`, `service_status` | `service_start`, `service_stop`, `service_restart` |
+
+Examples:
+
+```powershell
+# Mouse + keyboard + screenshot only (default — safest)
+node helper.js --token=tok_xxx
+
+# Plus shell — every shell command will prompt y/N
+node helper.js --token=tok_xxx --allow=shell
+
+# Everything — but still prompts for any destructive action
+node helper.js --token=tok_xxx --allow=shell,fs,registry,services
+
+# YOLO MODE — destructive actions run without prompting. Use sparingly.
+node helper.js --token=tok_xxx --allow=shell,fs --yolo
+```
+
+## Hard limits
+
+- Files: 5 MB cap on read AND write.
+- Shell: 5-minute max timeout per command.
+- Registry: only the standard hives (HKCU, HKLM, HKCR, HKU, HKCC).
+- All destructive ops require an interactive `y/N` (unless `--yolo`).
+- The helper does not run with elevated privileges unless you launch it from
+  an admin PowerShell. To install services or write to HKLM, run as admin.
 
 ## Why this design
 
@@ -102,12 +131,24 @@ powershell.exe -WindowStyle Hidden -Command "cd C:\Users\<you>\claw-code\desktop
 ## Safety notes
 
 - The helper trusts whoever has your pairing token. Don't share it.
-- If you ever lose the token, delete `~/.claw-desktop-helper.json` AND
-  generate a new one in the web app (Browser tab → just clear localStorage
-  and reload to regenerate, or rotate manually).
 - The chat model (gpt-oss:120b-cloud) is good but not perfect. It WILL
-  occasionally do the wrong thing. Watch what it does, especially early.
-- Hit Ctrl+C in the helper window to kill control immediately.
+  occasionally do the wrong thing.
+- **Per-command confirmation is your seat belt.** Read the prompt before
+  typing `y`. The format is:
+  ```
+  ──────── confirm ────────
+    shell command
+    command : git status
+    cwd     : C:\Users\Zen See\projects
+  allow? [y/N]:
+  ```
+  Default to `N` if anything looks wrong.
+- `--yolo` removes that seat belt. The helper prints a giant warning if
+  you use it. Don't combine `--yolo` with `--allow=shell` casually.
+- Hit `Ctrl+C` in the helper window to kill control instantly.
+- To rotate the pairing token: clear localStorage in the web app (DevTools
+  → Application → Local Storage → clear `clawcode-production.up.railway.app`),
+  reload, copy the new token, restart the helper with the new `--token=…`.
 
 ## Troubleshooting
 
