@@ -436,13 +436,7 @@
         <div class="ml-auto flex items-center gap-2">
           <input id="modelSelect" list="modelList" class="bg-transparent border px-3 py-1.5 text-sm font-mono cut-corner" style="border-color: var(--border-strong); color: var(--fg); width: 220px;" placeholder="model" />
           <datalist id="modelList">
-            <option value="gpt-oss:120b-cloud"></option>
-            <option value="gpt-oss:20b-cloud"></option>
-            <option value="qwen3-coder:480b-cloud"></option>
-            <option value="kimi-k2.5:cloud"></option>
-            <option value="deepseek-v3.2:cloud"></option>
-            <option value="gemma4:31b-cloud"></option>
-            <option value="gemma4:26b"></option>
+            <option value="auto">auto — pick per message</option>
           </datalist>
 
           <button id="cmdPaletteBtn" class="px-2 py-1.5 text-xs font-mono border hover:bg-ink-700 transition-colors flex items-center gap-2" style="border-color: var(--border-strong); color: var(--fg-muted);" title="Command palette">
@@ -541,7 +535,74 @@
     activeSession:'clawcode.activeSession.v1',
     memory:      'clawcode.memory.v1',
   };
-  const DEFAULT_MODEL = 'gpt-oss:120b-cloud';
+  const DEFAULT_MODEL = 'auto';
+
+  /* Ollama Cloud catalog. Categories drive the auto-router below. Update
+   * via https://ollama.com/search?c=cloud — the suffix on every entry must
+   * be ":cloud" so they hit Ollama's hosted GPUs instead of needing local. */
+  const CLOUD_MODELS = [
+    // General
+    { id: 'gpt-oss:120b-cloud',           cat: 'general',     desc: 'OpenAI open weights, 120B — strong default for chat + tool use' },
+    { id: 'gpt-oss:20b-cloud',            cat: 'small-fast',  desc: 'Same family, smaller and faster' },
+    { id: 'gemma4:cloud',                 cat: 'general',     desc: 'Google Gemma 4 — frontier-level reasoning + multimodal' },
+    { id: 'qwen3.5:cloud',                cat: 'general',     desc: 'Alibaba Qwen 3.5 — multimodal, strong all-rounder' },
+    { id: 'qwen3-next:cloud',             cat: 'general',     desc: 'Qwen3-Next preview — parameter-efficient' },
+    { id: 'gemini-3-flash-preview:cloud', cat: 'general',     desc: 'Google Gemini 3 Flash — frontier intelligence, low latency' },
+    { id: 'nemotron-3-super:cloud',       cat: 'general',     desc: 'NVIDIA Nemotron 3 Super, 120B MoE for multi-agent' },
+    // Reasoning
+    { id: 'deepseek-v4-pro:cloud',        cat: 'reasoning',   desc: 'DeepSeek v4 Pro — three reasoning modes' },
+    { id: 'deepseek-v4-flash:cloud',      cat: 'reasoning',   desc: 'DeepSeek v4 Flash — 1M-token context, faster' },
+    { id: 'glm-5:cloud',                  cat: 'reasoning',   desc: 'Zhipu GLM-5 — 744B for complex engineering' },
+    // Coder
+    { id: 'qwen3-coder-next:cloud',       cat: 'coder',       desc: 'Qwen coder — agentic-workflow tuned' },
+    { id: 'glm-5.1:cloud',                cat: 'coder',       desc: 'GLM-5.1 — strong coding + agentic engineering' },
+    { id: 'glm-4.7:cloud',                cat: 'coder',       desc: 'GLM-4.7 — coding-first' },
+    { id: 'minimax-m2.7:cloud',           cat: 'coder',       desc: 'MiniMax M2.7 — coding + productivity' },
+    { id: 'minimax-m2.5:cloud',           cat: 'coder',       desc: 'MiniMax M2.5 — coding + productivity' },
+    { id: 'devstral-small-2:cloud',       cat: 'coder',       desc: 'Mistral Devstral 24B — software-engineering agent' },
+    { id: 'rnj-1:cloud',                  cat: 'coder',       desc: '8B dense, optimized for code + STEM' },
+    // Vision / multimodal
+    { id: 'kimi-k2.6:cloud',              cat: 'vision',      desc: 'Moonshot Kimi K2.6 — native multimodal agent' },
+    { id: 'kimi-k2.5:cloud',              cat: 'vision',      desc: 'Moonshot Kimi K2.5 — multimodal' },
+    // Small / fast
+    { id: 'nemotron-3-nano:cloud',        cat: 'small-fast',  desc: 'NVIDIA Nemotron Nano — 4B/30B agentic, efficient' },
+    { id: 'ministral-3:cloud',            cat: 'small-fast',  desc: 'Mistral Ministral 3 — edge-tier latency' },
+    // Multilingual
+    { id: 'minimax-m2.1:cloud',           cat: 'multilingual', desc: 'MiniMax M2.1 — strong non-English + code' },
+  ];
+
+  // Quick lookup by category for the auto-router.
+  const MODEL_BY_CAT = CLOUD_MODELS.reduce((acc, m) => {
+    (acc[m.cat] = acc[m.cat] || []).push(m.id);
+    return acc;
+  }, {});
+
+  function pickModel(text = '', attachments = []) {
+    const t = String(text).toLowerCase();
+    const totalAttBytes = attachments.reduce((n, a) => n + (a.size || 0), 0);
+
+    if (attachments.some(a => a.kind === 'image')) {
+      return MODEL_BY_CAT.vision?.[0] || 'kimi-k2.6:cloud';
+    }
+    const codeMarkers = /(```|`\w)|(\b(refactor|debug|implement|stack ?trace|exception|compile|typescript|javascript|python|rust|golang|sqlite|postgres|regex|unit test|api endpoint|cargo |npm |pip |docker)\b)/;
+    if (codeMarkers.test(t) || /\.(rs|ts|tsx|jsx|js|mjs|py|go|java|cpp|c|h|sh|sql|css|html)\b/.test(t)) {
+      return MODEL_BY_CAT.coder?.[0] || 'qwen3-coder-next:cloud';
+    }
+    const reasoningMarkers = /\b(think step by step|reason through|prove|theorem|first principles|chain of thought|deeply analy[sz]e|formal proof|game theory)\b/;
+    if (reasoningMarkers.test(t) || t.length > 4000 || totalAttBytes > 50_000) {
+      return MODEL_BY_CAT.reasoning?.[0] || 'deepseek-v4-pro:cloud';
+    }
+    const fastMarkers = /\b(tldr|tl;dr|quick|short answer|one line|one sentence|brief|just )\b/;
+    if (t.length < 120 && fastMarkers.test(t)) {
+      return MODEL_BY_CAT['small-fast']?.[0] || 'gpt-oss:20b-cloud';
+    }
+    return 'gpt-oss:120b-cloud';
+  }
+
+  function resolveModel(input, text, attachments) {
+    if (!input || input === 'auto') return pickModel(text, attachments);
+    return input;
+  }
   // Same-origin proxy when served over http(s); fall back to local Ollama when opened as file://
   const OLLAMA_URL = (location.protocol === 'http:' || location.protocol === 'https:')
     ? '/v1/chat/completions'
@@ -993,7 +1054,7 @@
           <path d="M16 3 C 18 12, 18 19, 16 29" stroke="#ec8a25" stroke-width="2" stroke-linecap="round" fill="none"/>
           <path d="M26 4 C 23 12, 21 18, 23 28" stroke="#ec8a25" stroke-width="2" stroke-linecap="round" fill="none"/>
         </svg>
-        <span class="text-[10px] font-mono uppercase tracking-widest" style="color: var(--fg-dim);">claw · ${escapeHtml(m.model || activeSession().model || DEFAULT_MODEL)}</span>
+        <span class="text-[10px] font-mono uppercase tracking-widest" style="color: var(--fg-dim);">claw · ${escapeHtml(m.model || activeSession().model || DEFAULT_MODEL)}${m.requestedModel === 'auto' ? ' · auto' : ''}</span>
         ${m.streaming ? '' : `<button class="ml-auto text-[10px] font-mono uppercase tracking-widest hover:underline" style="color: var(--fg-dim);" data-remember="1" title="Save this reply (or selected text) to Memory">remember</button>`}
       `;
       const rememberBtn = head.querySelector('[data-remember]');
@@ -1847,6 +1908,7 @@
     if (!text) return;
     const sess = activeSession();
     sess.model = document.getElementById('modelSelect').value;
+    const dispatchModel = resolveModel(sess.model, text, state.pendingAttachments);
     sess.lastAt = Date.now();
 
     // Auto-title from first user message.
@@ -1866,7 +1928,7 @@
     autoresize();
     updateTokenCount();
 
-    const assistantMsg = { role: 'assistant', content: '', streaming: true, model: sess.model };
+    const assistantMsg = { role: 'assistant', content: '', streaming: true, model: dispatchModel, requestedModel: sess.model };
     sess.messages.push(assistantMsg);
     renderMessages();
     renderSessions();
@@ -1887,7 +1949,7 @@
           'Content-Type': 'application/json',
           'Authorization': 'Bearer ollama',
         },
-        body: JSON.stringify({ model: sess.model, messages, stream: true }),
+        body: JSON.stringify({ model: dispatchModel, messages, stream: true }),
         signal: state.abortCtrl.signal,
       });
 
@@ -1934,14 +1996,14 @@
         if (!results || results.length === 0) break;
         const feedback = `BRIDGE RESULTS:\n` + results.map((r, i) => `[${i + 1}] ${JSON.stringify(r).slice(0, 600)}`).join('\n');
         sess.messages.push({ role: 'user', content: feedback, bridgeFeedback: true });
-        const followAssistant = { role: 'assistant', content: '', streaming: true, model: sess.model };
+        const followAssistant = { role: 'assistant', content: '', streaming: true, model: dispatchModel, requestedModel: sess.model };
         sess.messages.push(followAssistant);
         renderMessages();
         const followMessages = buildPayloadMessages(sess);
         const followResp = await fetch(OLLAMA_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ollama' },
-          body: JSON.stringify({ model: sess.model, messages: followMessages, stream: true }),
+          body: JSON.stringify({ model: dispatchModel, messages: followMessages, stream: true }),
           signal: state.abortCtrl?.signal,
         });
         if (!followResp.ok) { followAssistant.error = `HTTP ${followResp.status}`; followAssistant.streaming = false; renderMessages(); break; }
@@ -2057,7 +2119,8 @@
             <div>
               <label class="block text-[10px] font-mono uppercase tracking-widest mb-1" style="color: var(--fg-dim);">Default model</label>
               <select id="m_model" class="w-full bg-transparent border px-2 py-1.5 text-sm font-mono" style="border-color: var(--border-strong); color: var(--fg);">
-                ${['gemma4:31b-cloud','gpt-oss:120b-cloud','gpt-oss:20b-cloud','qwen3-coder:480b-cloud','kimi-k2.5:cloud','deepseek-v3.2:cloud'].map(m => `<option ${m===a.model?'selected':''}>${m}</option>`).join('')}
+                <option ${'auto'===a.model?'selected':''} value="auto">auto — pick per message</option>
+                ${CLOUD_MODELS.map(m => `<option ${m.id===a.model?'selected':''}>${m.id}</option>`).join('')}
               </select>
             </div>
             <div>
@@ -2271,6 +2334,7 @@
      ============================================================ */
   function boot() {
     load();
+    populateModelDatalist();
     const sess = activeSession();
     document.getElementById('sessionTitle').value = sess.title;
     document.getElementById('modelSelect').value = sess.model || DEFAULT_MODEL;
