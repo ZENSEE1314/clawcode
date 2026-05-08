@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- warm dark disc, subtle hairline ring so it reads on light browser tabs too -->
+  <circle cx="16" cy="16" r="15.5" fill="#0d0c0a"/>
+  <circle cx="16" cy="16" r="15" fill="none" stroke="#3a352b" stroke-width="0.75"/>
+  <!-- 3 amber claw strokes, lean inward at the tips -->
+  <g fill="none" stroke="#ec8a25" stroke-width="3" stroke-linecap="round">
+    <path d="M9 7 C 11 13, 12 18, 11 25"/>
+    <path d="M16 6 C 17 13, 17 19, 16 26"/>
+    <path d="M23 7 C 21 13, 20 18, 21 25"/>
+  </g>
+</svg>
