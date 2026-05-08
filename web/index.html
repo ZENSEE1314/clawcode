@@ -2332,6 +2332,18 @@
   /* ============================================================
      BOOT
      ============================================================ */
+  // Populate the model datalist from CLOUD_MODELS, grouped by category.
+  // Hoisted via function declaration so boot() can call it.
+  function populateModelDatalist() {
+    const dl = document.getElementById('modelList');
+    if (!dl) return;
+    const cats = ['general', 'reasoning', 'coder', 'vision', 'small-fast', 'multilingual'];
+    const opts = cats.flatMap(cat =>
+      (MODEL_BY_CAT[cat] || []).map(id => `<option value="${id}">${cat} — ${id}</option>`)
+    );
+    dl.innerHTML = '<option value="auto">auto — pick per message</option>' + opts.join('');
+  }
+
   function boot() {
     load();
     populateModelDatalist();
