@@ -399,7 +399,7 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
             New session
           </span>
-          <kbd>⌘K</kbd>
+          <kbd>⌘N</kbd>
         </button>
       </div>
 
@@ -2245,9 +2245,7 @@
       applyTheme(cur === 'light' ? 'dark' : 'light');
     });
 
-    document.getElementById('cmdPaletteBtn').addEventListener('click', () => {
-      toast('Command palette — coming soon.');
-    });
+    document.getElementById('cmdPaletteBtn').addEventListener('click', () => openPalette());
     document.getElementById('settingsBtn').addEventListener('click', () => {
       toast('Settings live in the right panel for now.');
     });
@@ -2321,11 +2319,15 @@
     document.addEventListener('keydown', e => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
-        newSession();
+        openPalette();
       }
       if ((e.metaKey || e.ctrlKey) && e.key === '/') {
         e.preventDefault();
-        toast('Command palette — coming soon.');
+        openPalette();
+      }
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'n' || e.key === 'N')) {
+        e.preventDefault();
+        newSession();
       }
       if (e.key === 'Escape') {
         if (state.streaming) stopStreaming();
@@ -2339,6 +2341,232 @@
     setInterval(() => {
       if (state.jobs.some(j => j.status === 'running')) renderJobs();
     }, 1000);
+  }
+
+  /* ============================================================
+     COMMAND PALETTE — ⌘K / ⌘/
+     ============================================================ */
+  function getPaletteCommands() {
+    const cmds = [];
+    const tabsList = ['agents', 'memory', 'skills', 'browser', 'integrations'];
+
+    // Top-level actions
+    cmds.push(
+      { label: 'New session', cat: 'session', keys: '⌘N', run: () => newSession() },
+      { label: 'Rename current session', cat: 'session', run: () => document.getElementById('sessionTitle')?.focus() },
+      { label: 'Stop streaming', cat: 'session', keys: 'Esc', run: () => state.streaming && stopStreaming() },
+      { label: 'Toggle theme (dark / light)', cat: 'theme', run: () => {
+        const cur = document.documentElement.classList.contains('light') ? 'light' : 'dark';
+        applyTheme(cur === 'light' ? 'dark' : 'light');
+      }},
+    );
+
+    // Right-panel tabs
+    for (const t of tabsList) {
+      cmds.push({ label: `Open ${t} panel`, cat: 'panel', keywords: 'tab right', run: () => { state.rightTab = t; renderRight(); } });
+    }
+
+    // Models — auto + every cloud model, by category label
+    cmds.push({ label: 'Switch model → auto', cat: 'model', run: () => setModel('auto') });
+    for (const m of CLOUD_MODELS) {
+      cmds.push({ label: `Switch model → ${m.id}`, cat: m.cat + ' model', keywords: m.desc, run: () => setModel(m.id) });
+    }
+
+    // Sessions — switch to any
+    for (const s of state.sessions) {
+      if (s.id === state.activeSessionId) continue;
+      cmds.push({
+        label: `Switch session → ${s.title || 'untitled'}`,
+        cat: 'session',
+        keywords: (s.messages || []).slice(-1)[0]?.content?.slice(0, 80) || '',
+        run: () => switchSession(s.id),
+      });
+    }
+
+    // Agents — activate
+    for (const a of state.agents || []) {
+      cmds.push({
+        label: `Activate agent → ${a.name}${a.active ? ' (active)' : ''}`,
+        cat: 'agent',
+        keywords: a.description || '',
+        run: () => {
+          state.agents.forEach(x => x.active = (x.id === a.id));
+          persist();
+          renderActiveChips();
+          if (state.rightTab === 'agents') renderRight();
+        },
+      });
+    }
+
+    // Skills — toggle each
+    for (const s of state.skills || []) {
+      cmds.push({
+        label: `Toggle skill → ${s.name} (${s.enabled ? 'on' : 'off'})`,
+        cat: 'skill',
+        keywords: s.description || '',
+        run: () => {
+          s.enabled = !s.enabled; persist(); renderActiveChips();
+          if (state.rightTab === 'skills') renderRight();
+        },
+      });
+    }
+
+    // Browser bridge actions
+    cmds.push(
+      { label: 'Bridge → copy pairing token', cat: 'bridge', run: () => navigator.clipboard.writeText(bridgeToken()).then(() => toast('Token copied.')) },
+      { label: 'Bridge → take browser screenshot', cat: 'bridge', run: async () => {
+        try { const r = await bridgeCommand('screenshot'); toast(r?.data?.dataUrl ? 'Screenshot captured.' : 'No screenshot.'); }
+        catch (err) { toast(err.message); }
+      }},
+      { label: 'Bridge → take desktop screenshot', cat: 'bridge', run: async () => {
+        try { const r = await bridgeCommand('screenshot', {}, { target: 'desktop' }); toast(r?.data?.dataUrl ? 'Desktop screenshot.' : 'No screenshot.'); }
+        catch (err) { toast(err.message); }
+      }},
+    );
+
+    // Auto-approve toggles
+    for (const cat of ['shell','fs','registry','services','playwright','gbrain']) {
+      cmds.push({
+        label: `Auto-approve → toggle ${cat} (${bridge.autoApprove[cat] ? 'on' : 'off'})`,
+        cat: 'auto-approve',
+        run: () => {
+          bridge.autoApprove[cat] = !bridge.autoApprove[cat];
+          localStorage.setItem('clawcode.autoApprove.v1', JSON.stringify(bridge.autoApprove));
+          sendAutoApprove();
+          if (state.rightTab === 'browser') renderRight();
+          toast(`auto-approve ${cat}: ${bridge.autoApprove[cat] ? 'ON' : 'off'}`);
+        },
+      });
+    }
+
+    // Open external
+    cmds.push(
+      { label: 'Open → GitHub repo', cat: 'open', run: () => window.open('https://github.com/ZENSEE1314/clawcode/tree/web-ui', '_blank', 'noopener') },
+      { label: 'Open → Railway dashboard', cat: 'open', run: () => window.open('https://railway.com/dashboard', '_blank', 'noopener') },
+      { label: 'Open → Ollama Cloud models', cat: 'open', run: () => window.open('https://ollama.com/search?c=cloud', '_blank', 'noopener') },
+      { label: 'Open → NotebookLM', cat: 'open', run: () => window.open('https://notebooklm.google.com/', '_blank', 'noopener') },
+    );
+
+    // Memory
+    cmds.push(
+      { label: 'Memory → clear all', cat: 'memory', run: () => {
+        if (!confirm('Clear all memory? This cannot be undone.')) return;
+        state.memory = { aboutMe: '', projects: '', notes: '' };
+        persist();
+        if (state.rightTab === 'memory') renderRight();
+        toast('Memory cleared.');
+      }},
+    );
+
+    return cmds;
+  }
+
+  function setModel(id) {
+    document.getElementById('modelSelect').value = id;
+    const sess = activeSession();
+    sess.model = id; persist(); renderSessions();
+    toast(`Model: ${id}`);
+  }
+
+  // Lightweight fuzzy score: lowercase substring across label + cat + keywords.
+  function paletteScore(cmd, q) {
+    if (!q) return 1;
+    const hay = (cmd.label + ' ' + cmd.cat + ' ' + (cmd.keywords || '')).toLowerCase();
+    let lastIdx = -1, score = 0;
+    for (const ch of q) {
+      const i = hay.indexOf(ch, lastIdx + 1);
+      if (i === -1) return 0;
+      score += i === lastIdx + 1 ? 2 : 1;       // contiguous bonus
+      if (lastIdx === -1 && i < 5) score += 3;  // early-prefix bonus
+      lastIdx = i;
+    }
+    return score / hay.length + score;
+  }
+
+  function openPalette() {
+    if (document.getElementById('cmdPalette')) return;
+    const all = getPaletteCommands();
+    let filtered = all;
+    let selected = 0;
+
+    const root = document.getElementById('modalRoot');
+    root.innerHTML = `
+      <div id="cmdPalette" class="modal-bg fixed inset-0 z-[60] flex items-start justify-center pt-[15vh] p-4" role="dialog" aria-modal="true" aria-label="Command palette">
+        <div class="w-full max-w-xl border" style="border-color: var(--border-strong); background: var(--bg-elev-1); box-shadow: 0 24px 60px -10px rgba(0,0,0,0.6);">
+          <div class="flex items-center gap-2 px-3 py-2.5 border-b" style="border-color: var(--border-strong);">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--accent);" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+            <input id="paletteInput" type="text" autocomplete="off" placeholder="type a command…" class="w-full bg-transparent outline-none text-sm font-mono" style="color: var(--fg);" />
+            <kbd class="text-[10px] font-mono px-1.5 py-0.5 border" style="border-color: var(--border-strong); color: var(--fg-dim);">esc</kbd>
+          </div>
+          <ul id="paletteList" class="max-h-[50vh] overflow-y-auto"></ul>
+          <div class="px-3 py-2 border-t flex items-center gap-3 text-[10px] font-mono" style="border-color: var(--border-strong); color: var(--fg-dim);">
+            <span><kbd>↑</kbd><kbd>↓</kbd> nav</span>
+            <span><kbd>↵</kbd> run</span>
+            <span><kbd>esc</kbd> close</span>
+            <span class="ml-auto" id="paletteCount"></span>
+          </div>
+        </div>
+      </div>
+    `;
+    const overlay = document.getElementById('cmdPalette');
+    const input   = document.getElementById('paletteInput');
+    const list    = document.getElementById('paletteList');
+    const count   = document.getElementById('paletteCount');
+
+    function render() {
+      list.innerHTML = filtered.length ? filtered.map((c, i) => `
+        <li data-idx="${i}" class="px-3 py-2 cursor-pointer flex items-center gap-3 border-l-2 ${i === selected ? 'bg-ink-700' : ''}" style="border-color: ${i === selected ? 'var(--accent)' : 'transparent'};">
+          <span class="text-[9.5px] font-mono uppercase tracking-widest w-20 truncate" style="color: var(--fg-dim);">${escapeHtml(c.cat)}</span>
+          <span class="flex-1 text-[13px]" style="color: var(--fg);">${escapeHtml(c.label)}</span>
+          ${c.keys ? `<kbd class="text-[10px] font-mono px-1.5 py-0.5 border" style="border-color: var(--border-strong); color: var(--fg-dim);">${escapeHtml(c.keys)}</kbd>` : ''}
+        </li>
+      `).join('') : `<li class="px-3 py-6 text-center text-[12px]" style="color: var(--fg-dim);">no commands match</li>`;
+      count.textContent = `${filtered.length} of ${all.length}`;
+      const sel = list.querySelector(`[data-idx="${selected}"]`);
+      if (sel) sel.scrollIntoView({ block: 'nearest' });
+    }
+
+    function filter(q) {
+      const query = q.trim().toLowerCase();
+      filtered = all
+        .map(c => ({ c, s: paletteScore(c, query) }))
+        .filter(x => x.s > 0)
+        .sort((a, b) => b.s - a.s)
+        .map(x => x.c);
+      selected = 0;
+      render();
+    }
+
+    function close() { root.innerHTML = ''; }
+
+    function run(idx) {
+      const cmd = filtered[idx];
+      if (!cmd) return;
+      close();
+      try { cmd.run(); } catch (err) { toast(`failed: ${err.message}`); }
+    }
+
+    input.addEventListener('input', e => filter(e.target.value));
+    input.addEventListener('keydown', e => {
+      if (e.key === 'ArrowDown')      { e.preventDefault(); selected = Math.min(selected + 1, filtered.length - 1); render(); }
+      else if (e.key === 'ArrowUp')   { e.preventDefault(); selected = Math.max(selected - 1, 0); render(); }
+      else if (e.key === 'Enter')     { e.preventDefault(); run(selected); }
+      else if (e.key === 'Escape')    { e.preventDefault(); close(); }
+    });
+    list.addEventListener('mousemove', e => {
+      const li = e.target.closest('li[data-idx]');
+      if (!li) return;
+      const i = Number(li.dataset.idx);
+      if (i !== selected) { selected = i; render(); }
+    });
+    list.addEventListener('click', e => {
+      const li = e.target.closest('li[data-idx]');
+      if (li) run(Number(li.dataset.idx));
+    });
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+    filter('');
+    setTimeout(() => input.focus(), 0);
   }
 
   /* ============================================================
