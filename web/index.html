@@ -507,6 +507,7 @@
 
       <div class="px-5 flex border-b" style="border-color: var(--border);">
         <div class="tab active" data-tab="agents">Agents</div>
+        <div class="tab" data-tab="memory">Memory</div>
         <div class="tab" data-tab="skills">Skills</div>
         <div class="tab" data-tab="browser">Browser</div>
         <div class="tab" data-tab="integrations">Integrations</div>
@@ -533,6 +534,7 @@
     integrations:'clawcode.integrations.v1',
     theme:       'clawcode.theme.v1',
     activeSession:'clawcode.activeSession.v1',
+    memory:      'clawcode.memory.v1',
   };
   const DEFAULT_MODEL = 'gpt-oss:120b-cloud';
   // Same-origin proxy when served over http(s); fall back to local Ollama when opened as file://
@@ -545,6 +547,11 @@
     activeSessionId: null,
     agents: [],
     skills: [],
+    memory: {
+      aboutMe: '',     // user's name, role, preferences, communication style
+      projects: '',    // active projects, current focus
+      notes: '',       // facts, decisions, references the AI should remember
+    },
     integrations: {
       obsidianVault: '',
       dailyNotePath: '',
@@ -629,6 +636,7 @@
       state.agents       = JSON.parse(localStorage.getItem(STORAGE_KEYS.agents))       || seedAgents();
       state.skills       = JSON.parse(localStorage.getItem(STORAGE_KEYS.skills))       || seedSkills();
       state.integrations = JSON.parse(localStorage.getItem(STORAGE_KEYS.integrations)) || state.integrations;
+      state.memory = Object.assign(state.memory, JSON.parse(localStorage.getItem(STORAGE_KEYS.memory)) || {});
       state.activeSessionId = localStorage.getItem(STORAGE_KEYS.activeSession) || null;
     } catch (e) {
       console.warn('Resetting corrupt storage', e);
@@ -657,6 +665,7 @@
     localStorage.setItem(STORAGE_KEYS.agents, JSON.stringify(state.agents));
     localStorage.setItem(STORAGE_KEYS.skills, JSON.stringify(state.skills));
     localStorage.setItem(STORAGE_KEYS.integrations, JSON.stringify(state.integrations));
+    localStorage.setItem(STORAGE_KEYS.memory, JSON.stringify(state.memory));
     localStorage.setItem(STORAGE_KEYS.activeSession, state.activeSessionId);
   }
 
@@ -875,7 +884,15 @@
           <path d="M26 4 C 23 12, 21 18, 23 28" stroke="#ec8a25" stroke-width="2" stroke-linecap="round" fill="none"/>
         </svg>
         <span class="text-[10px] font-mono uppercase tracking-widest" style="color: var(--fg-dim);">claw · ${escapeHtml(m.model || activeSession().model || DEFAULT_MODEL)}</span>
+        ${m.streaming ? '' : `<button class="ml-auto text-[10px] font-mono uppercase tracking-widest hover:underline" style="color: var(--fg-dim);" data-remember="1" title="Save this reply (or selected text) to Memory">remember</button>`}
       `;
+      const rememberBtn = head.querySelector('[data-remember]');
+      if (rememberBtn) {
+        rememberBtn.addEventListener('click', () => {
+          const sel = window.getSelection()?.toString().trim();
+          window.__clawRemember(sel || m.content || '');
+        });
+      }
       inner.appendChild(head);
     }
 
@@ -938,6 +955,7 @@
     document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === state.rightTab));
 
     if (state.rightTab === 'agents')        renderAgentsTab(cont);
+    if (state.rightTab === 'memory')        renderMemoryTab(cont);
     if (state.rightTab === 'skills')        renderSkillsTab(cont);
     if (state.rightTab === 'browser')       renderBrowserTab(cont);
     if (state.rightTab === 'integrations')  renderIntegrationsTab(cont);
@@ -1035,6 +1053,105 @@
       cont.appendChild(row);
     });
   }
+
+  function buildMemoryPrompt() {
+    const m = state.memory || {};
+    const sections = [];
+    if (m.aboutMe?.trim())  sections.push(`# About the user\n${m.aboutMe.trim()}`);
+    if (m.projects?.trim()) sections.push(`# Active projects\n${m.projects.trim()}`);
+    if (m.notes?.trim())    sections.push(`# Notes from past conversations\n${m.notes.trim()}`);
+    if (!sections.length) return '';
+    return '\n\n' + [
+      'PERSISTENT MEMORY — these facts come from the user, edited via the Memory tab.',
+      'Trust them as authoritative. Reference them when relevant.',
+      'When the user says "remember this" or "save this", suggest specifically what should be added to which section.',
+      '',
+      ...sections,
+    ].join('\n');
+  }
+
+  function memoryCharCount() {
+    const m = state.memory || {};
+    return (m.aboutMe?.length || 0) + (m.projects?.length || 0) + (m.notes?.length || 0);
+  }
+
+  function renderMemoryTab(cont) {
+    const total = memoryCharCount();
+    const warn = total > 8000;
+    const card = document.createElement('div');
+    card.className = 'p-3 border';
+    card.style.borderColor = 'var(--border)';
+    card.style.background = 'var(--bg-elev-2)';
+    card.innerHTML = `
+      <div class="flex items-center gap-2 mb-2">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ec8a25" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M12 3 v18 M3 8 l9 -4 l9 4 M3 16 l9 4 l9 -4"/>
+        </svg>
+        <span class="font-display text-base tracking-tight" style="color: var(--fg);">Memory</span>
+      </div>
+      <p class="text-[11.5px] mb-3 leading-relaxed" style="color: var(--fg-muted);">
+        These three sections are <strong>prepended to every system prompt</strong>. The AI sees them on every turn, in every session.
+      </p>
+
+      ${[
+        { key: 'aboutMe',  label: 'About me',       placeholder: 'I am Zen — a developer based in Singapore. Prefer terse, technical replies. No emojis.' },
+        { key: 'projects', label: 'Active projects', placeholder: '• claw-code (this app, Railway-deployed)\n• Dropshipping store (Shopify + TikTok ads)' },
+        { key: 'notes',    label: 'Notes',           placeholder: 'Things to remember:\n• Use gpt-oss:120b-cloud, not gemma4 (flaky tool calls)\n• Railway region is europe-west4\n• Default branch on the repo is web-ui' },
+      ].map(({ key, label, placeholder }) => `
+        <div class="mb-3">
+          <div class="flex items-center justify-between mb-1">
+            <label class="block text-[10px] font-mono uppercase tracking-widest" style="color: var(--fg-dim);">${label}</label>
+            <span class="text-[10px] font-mono" style="color: var(--fg-dim);">${(state.memory[key] || '').length} ch</span>
+          </div>
+          <textarea data-mem="${key}" rows="${key === 'notes' ? 8 : key === 'projects' ? 5 : 4}" class="w-full bg-transparent border px-2 py-1.5 text-[12.5px] leading-relaxed font-mono" style="border-color: var(--border-strong); color: var(--fg); resize: vertical;" placeholder="${escapeHtml(placeholder)}">${escapeHtml(state.memory[key] || '')}</textarea>
+        </div>
+      `).join('')}
+
+      <div class="flex items-center justify-between text-[10.5px] font-mono mt-3 pt-2 border-t" style="border-color: var(--border-strong); color: ${warn ? '#c8553d' : 'var(--fg-dim)'};">
+        <span>total: ${total} ch ${warn ? '— consider trimming, this prepends to every request' : ''}</span>
+        <button id="memClear" class="text-[10.5px] underline" style="color: var(--fg-dim);">clear all</button>
+      </div>
+    `;
+    cont.appendChild(card);
+
+    card.querySelectorAll('textarea[data-mem]').forEach(ta => {
+      ta.addEventListener('input', e => {
+        state.memory[e.target.dataset.mem] = e.target.value;
+        persist();
+        // Refresh the char count without rebuilding the whole tab (avoids cursor jump).
+        const counter = e.target.closest('div').querySelector('span.font-mono');
+        if (counter) counter.textContent = `${e.target.value.length} ch`;
+      });
+    });
+    card.querySelector('#memClear').addEventListener('click', () => {
+      if (!confirm('Clear all memory? This cannot be undone.')) return;
+      state.memory = { aboutMe: '', projects: '', notes: '' };
+      persist();
+      renderRight();
+      toast('Memory cleared.');
+    });
+  }
+
+  // Prompt user to remember a snippet from a message (called from "Remember" button).
+  function rememberSnippet(text) {
+    if (!text || !text.trim()) return;
+    const snippet = text.length > 800 ? text.slice(0, 800) + '…' : text;
+    const target = prompt(
+      `Add this to memory? Type:\n  a = About me\n  p = Active projects\n  n = Notes (default)\n\nSnippet:\n${snippet.slice(0, 200)}${snippet.length > 200 ? '…' : ''}`,
+      'n'
+    );
+    if (!target) return;
+    const t = target.trim().toLowerCase();
+    const key = t.startsWith('a') ? 'aboutMe' : t.startsWith('p') ? 'projects' : 'notes';
+    const stamp = new Date().toISOString().slice(0, 10);
+    const entry = `\n• [${stamp}] ${snippet}`;
+    state.memory[key] = (state.memory[key] || '').trimEnd() + entry;
+    persist();
+    if (state.rightTab === 'memory') renderRight();
+    toast(`Saved to ${key === 'aboutMe' ? 'About me' : key === 'projects' ? 'Active projects' : 'Notes'}.`);
+  }
+  // Expose for inline onclick handlers in messageNode.
+  window.__clawRemember = rememberSnippet;
 
   function renderIntegrationsTab(cont) {
     // ----- Obsidian card -----
@@ -1736,6 +1853,8 @@
     if (bridge.executors.extension === 'connected' || bridge.executors.desktop === 'connected') {
       sys = (sys || 'You are a helpful local assistant.') + bridgeSystemPrompt();
     }
+    const memPrompt = buildMemoryPrompt();
+    if (memPrompt) sys = (sys || 'You are a helpful local assistant.') + memPrompt;
     if (sys) out.push({ role: 'system', content: sys });
     sess.messages
       .filter(m => !m.error && m.content)
