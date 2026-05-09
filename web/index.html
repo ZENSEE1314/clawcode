@@ -273,6 +273,43 @@
     /* Modal entry. */
     .modal-bg { background: rgba(0,0,0,0.55); backdrop-filter: blur(4px); }
 
+    /* Tool-call cards — shown under assistant messages while bridge actions run */
+    .tool-call {
+      display: flex; align-items: center; gap: 10px;
+      padding: 7px 11px; margin-top: 6px;
+      border: 1px solid var(--border-strong);
+      background: var(--bg-elev-1);
+      font-family: ui-monospace, "JetBrains Mono", monospace;
+      font-size: 11.5px;
+      color: var(--fg);
+    }
+    .tool-call .tc-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--fg-dim); flex: 0 0 auto;
+    }
+    .tool-call.pending .tc-dot { background: var(--fg-dim); }
+    .tool-call.running { border-color: var(--accent); }
+    .tool-call.running .tc-dot { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+    .tool-call.done    { border-left: 3px solid #6ace87; }
+    .tool-call.done    .tc-dot { background: #6ace87; }
+    .tool-call.failed  { border-left: 3px solid #c8553d; }
+    .tool-call.failed  .tc-dot { background: #c8553d; }
+    .tool-call .tc-meta { color: var(--fg-dim); margin-left: auto; }
+    .tool-call .tc-target {
+      font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.08em;
+      padding: 1px 5px; border: 1px solid var(--border-strong); color: var(--fg-dim);
+    }
+    .tool-call.failed .tc-target { border-color: #c8553d40; color: #c8553d; }
+    .tool-call.done .tc-target { border-color: #6ace8740; color: #6ace87; }
+    .tool-call details summary { cursor: pointer; outline: none; }
+    .tool-call details[open] { align-items: flex-start; }
+    .tool-call pre.tc-result {
+      margin: 4px 0 0; padding: 6px 8px;
+      background: var(--bg); color: var(--fg-muted);
+      font-size: 10.5px; max-height: 200px; overflow: auto;
+      white-space: pre-wrap; word-break: break-word;
+    }
+
     /* Layout root sits above grain. */
     .layout { position: relative; z-index: 2; }
 
@@ -1031,8 +1068,55 @@
       return;
     }
 
-    sess.messages.forEach(m => cont.appendChild(messageNode(m)));
+    sess.messages.forEach(m => {
+      // Hide raw bridge-feedback user messages — their content is already
+      // shown as tool-call cards under the previous assistant bubble.
+      if (m.bridgeFeedback) return;
+      cont.appendChild(messageNode(m));
+    });
     requestAnimationFrame(() => cont.scrollTop = cont.scrollHeight);
+  }
+
+  function stripActionBlocks(s) {
+    return String(s || '').replace(ACTION_RE, '').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  function toolCallCard(tc) {
+    const status = tc.status || 'pending';
+    const dur = tc.endedAt && tc.startedAt ? ` · ${tc.endedAt - tc.startedAt}ms` : '';
+    const paramSummary = (() => {
+      const p = tc.params || {};
+      const keys = Object.keys(p);
+      if (!keys.length) return '';
+      const main = ['url','selector','text','command','path','slug','query','question','combo','name','x','y','code'].find(k => k in p);
+      if (main) {
+        const v = String(p[main]);
+        return v.length > 60 ? v.slice(0, 60) + '…' : v;
+      }
+      return JSON.stringify(p).slice(0, 60);
+    })();
+    const resultText = (() => {
+      if (status !== 'done' && status !== 'failed') return '';
+      if (tc.error) return `error: ${tc.error}`;
+      if (!tc.result) return '';
+      const d = tc.result.data;
+      if (!d) return JSON.stringify(tc.result, null, 2).slice(0, 600);
+      if (typeof d === 'string') return d.slice(0, 600);
+      const cloned = { ...d };
+      if (cloned.dataUrl) cloned.dataUrl = '[image]';
+      return JSON.stringify(cloned, null, 2).slice(0, 800);
+    })();
+    const labelMap = { pending: 'queued', running: 'working…', done: 'done', failed: 'failed' };
+    return `
+      <div class="tool-call ${escapeHtml(status)}">
+        <span class="tc-dot" aria-hidden="true"></span>
+        <span class="tc-target">${escapeHtml(tc.target || 'browser')}</span>
+        <span style="font-weight:500">${escapeHtml(tc.action || '?')}</span>
+        ${paramSummary ? `<span style="color: var(--fg-muted);">${escapeHtml(paramSummary)}</span>` : ''}
+        <span class="tc-meta">${labelMap[status] || status}${dur}</span>
+        ${resultText ? `<details style="width:100%;margin-top:4px;"><summary style="font-size:10.5px;color:var(--fg-dim);">result</summary><pre class="tc-result">${escapeHtml(resultText)}</pre></details>` : ''}
+      </div>
+    `;
   }
 
   function messageNode(m) {
@@ -1097,15 +1181,25 @@
     body.dataset.role = m.role;
     // Skip markdown parse while streaming — re-running marked on every token
     // is the dominant cost. Use plain text + a caret; one final markdown
-    // pass happens when the stream completes.
+    // pass happens when the stream completes. Strip <action> blocks from
+    // the visible text — they're rendered as tool-call cards instead.
+    const displayText = m.role === 'assistant' ? stripActionBlocks(m.content) : (m.content || '');
     if (m.streaming) {
       body.dataset.streaming = '1';
-      body.textContent = m.content || '';
+      body.textContent = displayText;
       const caret = document.createElement('span');
       caret.className = 'caret';
       body.appendChild(caret);
     } else {
-      body.innerHTML = renderMarkdown(m.content || '');
+      body.innerHTML = renderMarkdown(displayText);
+    }
+
+    // Tool-call cards under the assistant message body.
+    if (m.role === 'assistant' && m.toolCalls?.length) {
+      const tcWrap = document.createElement('div');
+      tcWrap.className = 'mt-2';
+      tcWrap.innerHTML = m.toolCalls.map(toolCallCard).join('');
+      inner.appendChild(tcWrap);
     }
     if (m.error) {
       const err = document.createElement('div');
@@ -1826,25 +1920,61 @@
     return s;
   }
 
-  async function runBridgeActions(assistantContent) {
-    const matches = [...assistantContent.matchAll(ACTION_RE)];
-    if (!matches.length) return null;
-    const results = [];
+  // Parse <action> blocks out of an assistant reply and seed the message's
+  // toolCalls array. Each call gets a stable id so the renderer can update
+  // status in place as it transitions pending → running → done|failed.
+  function parseToolCalls(content) {
+    const calls = [];
+    const matches = [...String(content || '').matchAll(ACTION_RE)];
     for (const m of matches) {
       let parsed;
       try { parsed = JSON.parse(m[1]); }
-      catch (err) { results.push({ error: `invalid JSON in action block: ${err.message}` }); continue; }
-      if (!parsed.action) { results.push({ error: 'action block missing "action" field' }); continue; }
+      catch (err) { calls.push({ id: 'tc_' + Math.random().toString(36).slice(2, 8), parseError: err.message, status: 'failed' }); continue; }
+      calls.push({
+        id: 'tc_' + Math.random().toString(36).slice(2, 8),
+        target: parsed.target || 'browser',
+        action: parsed.action || '(no action)',
+        params: parsed.params || {},
+        status: 'pending',
+      });
+    }
+    return calls;
+  }
+
+  // Drive the assistant message's toolCalls through the bridge, mutating
+  // status as we go and re-rendering between each so the user sees
+  // pending → running → done/failed in real time.
+  async function runBridgeActions(assistantMsg) {
+    if (!assistantMsg.toolCalls || !assistantMsg.toolCalls.length) return null;
+    const results = [];
+    for (const tc of assistantMsg.toolCalls) {
+      if (tc.parseError) {
+        results.push({ ok: false, error: 'invalid action JSON: ' + tc.parseError });
+        continue;
+      }
+      if (!tc.action || tc.action === '(no action)') {
+        tc.status = 'failed'; tc.error = 'missing action field';
+        results.push({ ok: false, error: tc.error });
+        renderMessages();
+        continue;
+      }
+      tc.status = 'running'; tc.startedAt = Date.now();
+      renderMessages();
       try {
-        const r = await bridgeCommand(parsed.action, parsed.params || {}, { target: parsed.target || 'browser' });
-        // Skip the screenshot blob in the feedback to keep tokens reasonable
-        const sanitized = r.data?.dataUrl
+        const r = await bridgeCommand(tc.action, tc.params, { target: tc.target });
+        tc.status = r?.ok === false ? 'failed' : 'done';
+        tc.endedAt = Date.now();
+        const sanitized = r?.data?.dataUrl
           ? { ...r, data: { ...r.data, dataUrl: '[screenshot captured, ' + Math.round(r.data.dataUrl.length / 1024) + 'kb]' } }
           : r;
+        tc.result = sanitized;
+        if (r?.error) tc.error = r.error;
         results.push(sanitized);
       } catch (err) {
+        tc.status = 'failed'; tc.error = err.message; tc.endedAt = Date.now();
         results.push({ ok: false, error: err.message });
       }
+      renderMessages();
     }
     return results;
   }
@@ -2002,9 +2132,11 @@
       // Browser bridge — execute any <action>...</action> blocks the model emitted.
       // Loop up to 5 turns so multi-step plans complete without manual re-prompting.
       let loopGuard = 5;
-      let lastContent = assistantMsg.content;
+      let lastMsg = assistantMsg;
       while (loopGuard-- > 0 && (bridge.executors.extension === 'connected' || bridge.executors.desktop === 'connected')) {
-        const results = await runBridgeActions(lastContent);
+        lastMsg.toolCalls = parseToolCalls(lastMsg.content);
+        renderMessages();
+        const results = await runBridgeActions(lastMsg);
         if (!results || results.length === 0) break;
         const feedback = `BRIDGE RESULTS:\n` + results.map((r, i) => `[${i + 1}] ${JSON.stringify(r).slice(0, 600)}`).join('\n');
         sess.messages.push({ role: 'user', content: feedback, bridgeFeedback: true });
@@ -2042,7 +2174,7 @@
         }
         followAssistant.streaming = false;
         renderMessages();
-        lastContent = followAssistant.content;
+        lastMsg = followAssistant;
       }
     } catch (err) {
       assistantMsg.streaming = false;
