@@ -71,15 +71,35 @@ async function proxyChat(req, res) {
     },
   };
 
+  // Stale model names (e.g. gemma4:31b-cloud after Ollama renamed it) cause
+  // every send to 400. Retry once with a known-good model, surface the swap
+  // via x-claw-model-fallback so the UI can update the dropdown.
+  const MODEL_FALLBACK = 'gpt-oss:120b-cloud';
+  const callOllama = (req) => fetch(`${OLLAMA_URL}/api/chat`, {
+    method: 'POST',
+    headers: { 'authorization': `Bearer ${OLLAMA_API_KEY}`, 'content-type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+
   try {
-    const upstream = await fetch(`${OLLAMA_URL}/api/chat`, {
-      method: 'POST',
-      headers: {
-        'authorization': `Bearer ${OLLAMA_API_KEY}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify(ollamaReq),
-    });
+    let upstream = await callOllama(ollamaReq);
+    let originalModel = null;
+    if (
+      !upstream.ok &&
+      ollamaReq.model && ollamaReq.model !== MODEL_FALLBACK &&
+      (upstream.status === 400 || upstream.status === 404 || upstream.status === 422)
+    ) {
+      try { await upstream.text(); } catch { /* drain */ }
+      originalModel = ollamaReq.model;
+      const retry = await callOllama({ ...ollamaReq, model: MODEL_FALLBACK });
+      if (retry.ok) {
+        ollamaReq.model = MODEL_FALLBACK;
+        upstream = retry;
+      } else {
+        upstream = retry;
+        originalModel = null;
+      }
+    }
 
     if (!upstream.ok) {
       const text = await upstream.text();
@@ -93,12 +113,18 @@ async function proxyChat(req, res) {
       return;
     }
 
-    res.writeHead(200, {
+    const respHeaders = {
       'content-type': 'text/event-stream',
       'cache-control': 'no-cache, no-transform',
       'connection': 'keep-alive',
       'x-accel-buffering': 'no',
-    });
+    };
+    if (originalModel) {
+      respHeaders['x-claw-model-fallback'] = originalModel;
+      respHeaders['x-claw-model-used']     = MODEL_FALLBACK;
+      respHeaders['access-control-expose-headers'] = 'x-claw-model-fallback, x-claw-model-used';
+    }
+    res.writeHead(200, respHeaders);
 
     const reader = upstream.body.getReader();
     const decoder = new TextDecoder();

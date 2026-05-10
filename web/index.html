@@ -746,6 +746,13 @@
       state.agents = seedAgents();
       state.skills = seedSkills();
     }
+    // Migration: heal sessions whose pinned model is no longer in the cloud
+    // catalog (e.g. gemma4:31b-cloud after the Ollama Cloud rename). Switch
+    // them to "auto" so the router picks a real model.
+    const validModels = new Set(['auto', ...CLOUD_MODELS.map(m => m.id)]);
+    for (const s of state.sessions) {
+      if (s.model && !validModels.has(s.model)) s.model = 'auto';
+    }
     if (!state.sessions.length) {
       const s = seedSession('welcome to claw');
       s.messages.push({
@@ -1981,24 +1988,20 @@
 
   bridgeConnect();
 
-  /* Single-retry fallback for stale model names. If Ollama Cloud returns a
-   * 400 (most often "model X not found"), retry once with gpt-oss:120b-cloud.
-   * If the retry succeeds, callers should toast and rebind the session so
-   * future sends don't keep failing. */
+  /* Stale-model fallback. The PROXY (server.js) does a server-side retry with
+   * gpt-oss:120b-cloud on any 400/404/422 from Ollama and tags the response
+   * with x-claw-model-fallback / x-claw-model-used. We just read those
+   * headers; no client-side retry needed. */
   const MODEL_FALLBACK = 'gpt-oss:120b-cloud';
   async function postWithModelFallback(body, signal) {
     const headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ollama' };
     const original = body.model;
     const resp = await fetch(OLLAMA_URL, { method: 'POST', headers, body: JSON.stringify(body), signal });
-    if (resp.status !== 400 || original === MODEL_FALLBACK) {
-      return { resp, model: original, fellBack: false };
+    const fbHeader = resp.headers.get('x-claw-model-fallback');
+    const usedHeader = resp.headers.get('x-claw-model-used') || MODEL_FALLBACK;
+    if (fbHeader) {
+      return { resp, model: usedHeader, fellBack: true, originalModel: fbHeader };
     }
-    const retry = await fetch(OLLAMA_URL, {
-      method: 'POST', headers,
-      body: JSON.stringify({ ...body, model: MODEL_FALLBACK }),
-      signal,
-    });
-    if (retry.ok) return { resp: retry, model: MODEL_FALLBACK, fellBack: true, originalModel: original };
     return { resp, model: original, fellBack: false };
   }
 
