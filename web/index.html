@@ -1981,6 +1981,27 @@
 
   bridgeConnect();
 
+  /* Single-retry fallback for stale model names. If Ollama Cloud returns a
+   * 400 (most often "model X not found"), retry once with gpt-oss:120b-cloud.
+   * If the retry succeeds, callers should toast and rebind the session so
+   * future sends don't keep failing. */
+  const MODEL_FALLBACK = 'gpt-oss:120b-cloud';
+  async function postWithModelFallback(body, signal) {
+    const headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ollama' };
+    const original = body.model;
+    const resp = await fetch(OLLAMA_URL, { method: 'POST', headers, body: JSON.stringify(body), signal });
+    if (resp.status !== 400 || original === MODEL_FALLBACK) {
+      return { resp, model: original, fellBack: false };
+    }
+    const retry = await fetch(OLLAMA_URL, {
+      method: 'POST', headers,
+      body: JSON.stringify({ ...body, model: MODEL_FALLBACK }),
+      signal,
+    });
+    if (retry.ok) return { resp: retry, model: MODEL_FALLBACK, fellBack: true, originalModel: original };
+    return { resp, model: original, fellBack: false };
+  }
+
   /* ============================================================
      SESSION OPS
      ============================================================ */
@@ -2050,7 +2071,7 @@
     if (!text) return;
     const sess = activeSession();
     sess.model = document.getElementById('modelSelect').value;
-    const dispatchModel = resolveModel(sess.model, text, state.pendingAttachments);
+    let dispatchModel = resolveModel(sess.model, text, state.pendingAttachments);
     sess.lastAt = Date.now();
 
     // Auto-title from first user message.
@@ -2085,15 +2106,20 @@
     sendBtn.classList.add('bg-rust-500', 'hover:bg-rust-400');
 
     try {
-      const resp = await fetch(OLLAMA_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ollama',
-        },
-        body: JSON.stringify({ model: dispatchModel, messages, stream: true }),
-        signal: state.abortCtrl.signal,
-      });
+      const result = await postWithModelFallback(
+        { model: dispatchModel, messages, stream: true },
+        state.abortCtrl.signal,
+      );
+      const resp = result.resp;
+      if (result.fellBack) {
+        toast(`"${result.originalModel}" not available — switched to ${result.model} and pinned this session to auto.`);
+        sess.model = 'auto';
+        document.getElementById('modelSelect').value = 'auto';
+        assistantMsg.model = result.model;
+        assistantMsg.requestedModel = 'auto';
+        dispatchModel = result.model;
+        renderSessions();
+      }
 
       if (!resp.ok) {
         throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
@@ -2144,12 +2170,16 @@
         sess.messages.push(followAssistant);
         renderMessages();
         const followMessages = buildPayloadMessages(sess);
-        const followResp = await fetch(OLLAMA_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ollama' },
-          body: JSON.stringify({ model: dispatchModel, messages: followMessages, stream: true }),
-          signal: state.abortCtrl?.signal,
-        });
+        const fr = await postWithModelFallback(
+          { model: dispatchModel, messages: followMessages, stream: true },
+          state.abortCtrl?.signal,
+        );
+        const followResp = fr.resp;
+        if (fr.fellBack) {
+          toast(`"${fr.originalModel}" not available — switched to ${fr.model}.`);
+          dispatchModel = fr.model;
+          followAssistant.model = fr.model;
+        }
         if (!followResp.ok) { followAssistant.error = `HTTP ${followResp.status}`; followAssistant.streaming = false; renderMessages(); break; }
         const reader2 = followResp.body.getReader();
         const dec2 = new TextDecoder();
