@@ -131,6 +131,18 @@ async function proxyChat(req, res) {
     let buffer = '';
     const idStr = `chatcmpl-${Date.now()}`;
     const created = Math.floor(Date.now() / 1000);
+    let totalContentLen = 0;
+    let lastChunk = null;
+    let sentDone = false;
+
+    function writeSse(obj) { res.write(`data: ${JSON.stringify(obj)}\n\n`); }
+    function writeSyntheticContent(text) {
+      writeSse({
+        id: idStr, object: 'chat.completion.chunk', created,
+        model: ollamaReq.model,
+        choices: [{ index: 0, delta: { role: 'assistant', content: text }, finish_reason: null }],
+      });
+    }
 
     while (true) {
       const { value, done } = await reader.read();
@@ -143,24 +155,52 @@ async function proxyChat(req, res) {
         if (!trimmed) continue;
         let chunk;
         try { chunk = JSON.parse(trimmed); } catch { continue; }
+        lastChunk = chunk;
         const content = chunk.message?.content ?? '';
+        if (content) totalContentLen += content.length;
         const finishReason = chunk.done ? (chunk.done_reason || 'stop') : null;
-        const sse = {
-          id: idStr,
-          object: 'chat.completion.chunk',
-          created,
+
+        // Empty-response detector: if Ollama is sending us done=true with
+        // zero content tokens, that's almost always an account issue
+        // (invalid key / out of credits / model not entitled). Synthesize a
+        // diagnostic message into the stream BEFORE the [DONE] marker so
+        // the user sees a clear explanation instead of silent emptiness.
+        if (chunk.done && totalContentLen === 0) {
+          const diag = [
+            '⚠️ Ollama Cloud returned an empty response.',
+            '',
+            'Most common causes:',
+            `• Your **OLLAMA_API_KEY** on Railway is invalid or expired`,
+            `• Your **Ollama Cloud account is out of credits** — check https://ollama.com/settings`,
+            `• Model "${ollamaReq.model}" isn't available to your account/plan`,
+            `• Ollama Cloud is rate-limiting or down`,
+            '',
+            `**Diagnostic:** upstream HTTP ${upstream.status}, response chunks: ${chunk.eval_count ?? 0} tokens, model echoed: ${chunk.model || '(none)'}.`,
+            '',
+            'Fix: rotate the key at https://ollama.com/settings/keys, paste the new value into Railway → Variables → OLLAMA_API_KEY, then send again.',
+          ].join('\n');
+          writeSyntheticContent(diag);
+        }
+
+        writeSse({
+          id: idStr, object: 'chat.completion.chunk', created,
           model: chunk.model || ollamaReq.model,
           choices: [{
             index: 0,
             delta: chunk.done ? {} : { role: 'assistant', content },
             finish_reason: finishReason,
           }],
-        };
-        res.write(`data: ${JSON.stringify(sse)}\n\n`);
-        if (chunk.done) {
-          res.write('data: [DONE]\n\n');
-        }
+        });
+        if (chunk.done) { res.write('data: [DONE]\n\n'); sentDone = true; }
       }
+    }
+    // If the upstream closed without ever sending done=true, emit a
+    // diagnostic so the client doesn't hang silently.
+    if (!sentDone) {
+      writeSyntheticContent(`⚠️ Upstream closed without completing. Last chunk: ${lastChunk ? JSON.stringify(lastChunk).slice(0, 200) : '(none)'}`);
+      writeSse({ id: idStr, object: 'chat.completion.chunk', created, model: ollamaReq.model,
+        choices: [{ index: 0, delta: {}, finish_reason: 'error' }] });
+      res.write('data: [DONE]\n\n');
     }
     res.end();
   } catch (err) {
