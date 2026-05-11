@@ -324,7 +324,7 @@ function checkAuth(req, res) {
 const server = createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/healthz') {
     res.writeHead(200, { 'content-type': 'text/plain' });
-    res.end('ok');
+    res.end('ok build=8d82e49+diag2');
     return;
   }
   if (!checkAuth(req, res)) return;
