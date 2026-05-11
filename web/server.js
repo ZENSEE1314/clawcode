@@ -159,39 +159,49 @@ async function proxyChat(req, res) {
         const content = chunk.message?.content ?? '';
         if (content) totalContentLen += content.length;
         const finishReason = chunk.done ? (chunk.done_reason || 'stop') : null;
+        const modelEcho = chunk.model || ollamaReq.model;
 
-        // Empty-response detector: if Ollama is sending us done=true with
-        // zero content tokens, that's almost always an account issue
-        // (invalid key / out of credits / model not entitled). Synthesize a
-        // diagnostic message into the stream BEFORE the [DONE] marker so
-        // the user sees a clear explanation instead of silent emptiness.
-        if (chunk.done && totalContentLen === 0) {
-          const diag = [
-            '⚠️ Ollama Cloud returned an empty response.',
-            '',
-            'Most common causes:',
-            `• Your **OLLAMA_API_KEY** on Railway is invalid or expired`,
-            `• Your **Ollama Cloud account is out of credits** — check https://ollama.com/settings`,
-            `• Model "${ollamaReq.model}" isn't available to your account/plan`,
-            `• Ollama Cloud is rate-limiting or down`,
-            '',
-            `**Diagnostic:** upstream HTTP ${upstream.status}, response chunks: ${chunk.eval_count ?? 0} tokens, model echoed: ${chunk.model || '(none)'}.`,
-            '',
-            'Fix: rotate the key at https://ollama.com/settings/keys, paste the new value into Railway → Variables → OLLAMA_API_KEY, then send again.',
-          ].join('\n');
-          writeSyntheticContent(diag);
+        // Always emit content if present, regardless of whether the chunk
+        // also has done=true. Ollama Cloud sometimes bundles the final
+        // tokens with the done marker — if we suppress content based on
+        // done, we drop it on the floor.
+        if (content) {
+          writeSse({
+            id: idStr, object: 'chat.completion.chunk', created, model: modelEcho,
+            choices: [{ index: 0, delta: { role: 'assistant', content }, finish_reason: null }],
+          });
         }
 
-        writeSse({
-          id: idStr, object: 'chat.completion.chunk', created,
-          model: chunk.model || ollamaReq.model,
-          choices: [{
-            index: 0,
-            delta: chunk.done ? {} : { role: 'assistant', content },
-            finish_reason: finishReason,
-          }],
-        });
-        if (chunk.done) { res.write('data: [DONE]\n\n'); sentDone = true; }
+        if (chunk.done) {
+          // Empty-response detector — fires on done with zero accumulated
+          // content. Almost always an account issue (key invalid / out of
+          // credits / model not entitled). Surface a clear diagnostic into
+          // the stream so the user sees what to fix instead of silence.
+          if (totalContentLen === 0) {
+            const diag = [
+              '⚠️ Ollama Cloud returned an empty response.',
+              '',
+              'Most common causes:',
+              `• Your **OLLAMA_API_KEY** on Railway is invalid or expired`,
+              `• Your **Ollama Cloud account is out of credits** — check https://ollama.com/settings`,
+              `• Model "${ollamaReq.model}" isn't available to your account/plan`,
+              `• Ollama Cloud is rate-limiting or down`,
+              '',
+              `**Diagnostic:** upstream HTTP ${upstream.status}, eval_count: ${chunk.eval_count ?? 0}, prompt_eval_count: ${chunk.prompt_eval_count ?? 0}, model echoed: ${chunk.model || '(none)'}, done_reason: ${chunk.done_reason || '(none)'}.`,
+              '',
+              'Fix: rotate the key at https://ollama.com/settings/keys, paste the new value into Railway → Variables → OLLAMA_API_KEY, then send again.',
+            ].join('\n');
+            writeSyntheticContent(diag);
+          }
+          // Final marker chunk (empty delta + finish_reason) — required by
+          // the OpenAI SSE spec for clean stream termination.
+          writeSse({
+            id: idStr, object: 'chat.completion.chunk', created, model: modelEcho,
+            choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+          });
+          res.write('data: [DONE]\n\n');
+          sentDone = true;
+        }
       }
     }
     // If the upstream closed without ever sending done=true, emit a
@@ -324,7 +334,7 @@ function checkAuth(req, res) {
 const server = createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/healthz') {
     res.writeHead(200, { 'content-type': 'text/plain' });
-    res.end('ok build=8d82e49+diag2');
+    res.end('ok build=8d82e49+diag3');
     return;
   }
   if (!checkAuth(req, res)) return;
